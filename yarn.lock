@@ -7,40 +7,38 @@
   resolved "https://registry.yarnpkg.com/@balena/dockerignore/-/dockerignore-1.0.2.tgz#9ffe4726915251e8eb69f44ef3547e0da2c03e0d"
   integrity sha512-wMue2Sy4GAVTk6Ic4tJVcnfdau+gx2EnG7S+uAEe+TWJFqE4YoWN4/H8MSLj4eYJKxGg26lZwboEniNiNwZQ6Q==
 
-"@ctrl/magnet-link@^4.2.0":
-  version "4.2.0"
-  resolved "https://registry.yarnpkg.com/@ctrl/magnet-link/-/magnet-link-4.2.0.tgz#6ed7eeea44ba0d63a56032b72638f31ed32ff4ed"
-  integrity sha512-4pa9hnMWmgoGl+5HJ/B9d5ugIr105AGD3rsTSlE8pTR7d2+xrEhLPCKRp/Y6k/k9Fo6DaJ1FRgwRxdi60vmxtg==
+"@ctrl/magnet-link@^4.3.0":
+  version "4.3.0"
+  resolved "https://registry.yarnpkg.com/@ctrl/magnet-link/-/magnet-link-4.3.0.tgz#f1719fd5b120f7411b64d2367dce86e670c876db"
+  integrity sha512-fEfw3AeQ8XhVsNzogZrnyTNDD/Tpbfl3ybHsspBMvj0UKctabApv1JV3JJUQG/hoX6hiO+DtQS+acN7dMPX01g==
   dependencies:
     rfc4648 "^1.5.4"
     uint8array-extras "^1.5.0"
 
-"@ctrl/qbittorrent@^9.11.0":
-  version "9.11.0"
-  resolved "https://registry.yarnpkg.com/@ctrl/qbittorrent/-/qbittorrent-9.11.0.tgz#a61020d4fd32df8e3e906972e1d63f8f74ad9866"
-  integrity sha512-mltiPLncdpAHrRbd2H8uy9nTgFhk0urcmkHxCDHcJehRvgd6ta2qnhQ2aO0KI8lgNDvHfmiNh4FAx0yoPBz8Xg==
+"@ctrl/qbittorrent@^9.12.1":
+  version "9.12.1"
+  resolved "https://registry.yarnpkg.com/@ctrl/qbittorrent/-/qbittorrent-9.12.1.tgz#e331ad19188526f184b40a21aa114d56bedb1237"
+  integrity sha512-6rSTWPV0UwehqLCyBLh9Avw5FPA1nh8SO+aTxrEXu6okZPjz+3tn7EGZdLhOfy+6poIc7miX/1g1VAOVo3JSTA==
   dependencies:
-    "@ctrl/magnet-link" "^4.2.0"
-    "@ctrl/shared-torrent" "^6.5.0"
-    "@ctrl/torrent-file" "^4.4.0"
-    cookie "^1.0.2"
+    "@ctrl/magnet-link" "^4.3.0"
+    "@ctrl/shared-torrent" "^6.5.1"
+    "@ctrl/torrent-file" "^4.5.0"
+    cookie "^1.1.1"
     node-fetch-native "^1.6.7"
     ofetch "^1.5.1"
-    type-fest "^5.2.0"
-    ufo "^1.6.1"
+    type-fest "^5.6.0"
+    ufo "^1.6.4"
     uint8array-extras "^1.5.0"
 
-"@ctrl/shared-torrent@^6.5.0":
-  version "6.5.0"
-  resolved "https://registry.yarnpkg.com/@ctrl/shared-torrent/-/shared-torrent-6.5.0.tgz#34d58e02ba1add904b905e6789443e767d2cafc4"
-  integrity sha512-Wu5XEPLomfmLWUW+UY63yB7g3orZDMgAZVEOYonVJOwajVlMcfT0AkEVtqeOjAhkCC9Q/VKXlHEP9G/xdyW4qA==
+"@ctrl/shared-torrent@^6.5.1":
+  version "6.5.1"
+  resolved "https://registry.yarnpkg.com/@ctrl/shared-torrent/-/shared-torrent-6.5.1.tgz#72f2fe6e16ca979cb736b3fffe1ed3595d197aec"
+  integrity sha512-ZdItYUwzHOu+8s416oRIEwvqDUC3aON4Lv/Ev4H5KxEkbjfkQiaONS/7+jos2+yJWleiXlRdBsoIpZR5Cd1UHQ==
 
-"@ctrl/torrent-file@^4.4.0":
-  version "4.4.0"
-  resolved "https://registry.yarnpkg.com/@ctrl/torrent-file/-/torrent-file-4.4.0.tgz#fcfebb4325077441bf6574c1220bb6c0cd586a00"
-  integrity sha512-e/AuvVqH6xJxeowZeGD83YtViDDDEtK6LcIrtU7PsxJlDNMvyqPN2wpZsIXYRxPY+NqkiWcpkrpAnHLTPD6dpw==
-  dependencies:
-    uint8array-extras "^1.5.0"
+"@ctrl/torrent-file@^4.5.0":
+  version "4.5.0"
+  resolved "https://registry.yarnpkg.com/@ctrl/torrent-file/-/torrent-file-4.5.0.tgz#cba0958a3c2e78667eaa1e1b794a1380c7f99918"
+  integrity sha512-ECzdbioAXLx7E3w/G9wMBz64K7MD5gRH6A2ypDcax+3cDmELdlKQfJIzX7q+if7E2TO+nbcabx76g0su3t01mQ==
 
 "@emnapi/runtime@^1.7.0":
   version "1.7.1"
@@ -875,7 +873,7 @@ concat-map@0.0.1:
   resolved "https://registry.yarnpkg.com/concat-map/-/concat-map-0.0.1.tgz#d8a96bd77fd68df7793a73036a3ba0d5405d477b"
   integrity sha512-/Srv4dswyQNBfohGpz9o6Yb3Gz3SrUDqBH5rTuhGR7ahtlbYKnVxw2bCFMRljaA7EXHaXZ8wsHdodFvbkhKmqg==
 
-cookie@^1.0.2:
+cookie@^1.1.1:
   version "1.1.1"
   resolved "https://registry.yarnpkg.com/cookie/-/cookie-1.1.1.tgz#3bb9bdfc82369db9c2f69c93c9c3ceb310c88b3c"
   integrity sha512-ei8Aos7ja0weRpFzJnEA9UHJ/7XQmqglbRwnf2ATjcB9Wq874VKH9kfjjirM6UhU2/E5fFYadylyhFldcqSidQ==
@@ -1884,10 +1882,10 @@ type-check@^0.4.0, type-check@~0.4.0:
   dependencies:
     prelude-ls "^1.2.1"
 
-type-fest@^5.2.0:
-  version "5.3.1"
-  resolved "https://registry.yarnpkg.com/type-fest/-/type-fest-5.3.1.tgz#251b8d0a813c1dbccf1f9450ba5adcdf7072adc2"
-  integrity sha512-VCn+LMHbd4t6sF3wfU/+HKT63C9OoyrSIf4b+vtWHpt2U7/4InZG467YDNMFMR70DdHjAdpPWmw2lzRdg0Xqqg==
+type-fest@^5.6.0:
+  version "5.6.0"
+  resolved "https://registry.yarnpkg.com/type-fest/-/type-fest-5.6.0.tgz#502f7a003b7309e96a7e17052cc2ab2c7e5c7a31"
+  integrity sha512-8ZiHFm91orbSAe2PSAiSVBVko18pbhbiB3U9GglSzF/zCGkR+rxpHx6sEMCUm4kxY4LjDIUGgCfUMtwfZfjfUA==
   dependencies:
     tagged-tag "^1.0.0"
 
@@ -1910,6 +1908,11 @@ ufo@^1.6.1:
   version "1.6.1"
   resolved "https://registry.yarnpkg.com/ufo/-/ufo-1.6.1.tgz#ac2db1d54614d1b22c1d603e3aef44a85d8f146b"
   integrity sha512-9a4/uxlTWJ4+a5i0ooc1rU7C7YOw3wT+UGqdeNNHWnOF9qcMBgLRS+4IYUqbczewFx4mLEig6gawh7X6mFlEkA==
+
+ufo@^1.6.4:
+  version "1.6.4"
+  resolved "https://registry.yarnpkg.com/ufo/-/ufo-1.6.4.tgz#7a8fb875fcc6382d2c7d0b3692738b0500a92467"
+  integrity sha512-JFNbkD1Svwe0KvGi8GOeLcP4kAWQ609twvCdcHxq1oSL8svv39ZuSvajcD8B+5D0eL4+s1Is2D/O6KN3qcTeRA==
 
 uint8array-extras@^1.5.0:
   version "1.5.0"

@@ -46,6 +46,7 @@ interface PortForwardingInfo {
 
 export interface WindscribePort {
   port: number,
+  announcePort: number,
   expires: Date,
 }
 
@@ -123,19 +124,49 @@ export class WindscribeClient {
 
     const ret = {
       port: this.getTorrentPort(portForwardingInfo),
+      announcePort: this.getAnnouncePort(portForwardingInfo),
       expires: new Date((portForwardingInfo.epfExpires + 86400 * 7) * 1000),
     };
 
-    await this.cache.set('port', ret.port.toString(), ret.expires.getTime() - Date.now());
+    await this.cache.set('port', JSON.stringify({
+      port: ret.port,
+      announcePort: ret.announcePort,
+    }), ret.expires.getTime() - Date.now());
 
     return ret;
   }
 
   async getPort(): Promise<WindscribePort | null> {
     const cachedPort = await this.cache.get('port', {raw: true});
-    return cachedPort == undefined ? null : {
-      port: parseInt(cachedPort.value),
+    if (cachedPort == undefined) {
+      return null;
+    }
+
+    const portInfo = this.parseCachedPort(cachedPort.value);
+    return {
+      port: portInfo.port,
+      announcePort: portInfo.announcePort,
       expires: new Date(cachedPort.expires),
+    };
+  }
+
+  private parseCachedPort(cachedPort: string): {port: number, announcePort: number} {
+    try {
+      const portInfo = JSON.parse(cachedPort) as Partial<{port: number, announcePort: number}>;
+      if (typeof portInfo.port == 'number') {
+        return {
+          port: portInfo.port,
+          announcePort: typeof portInfo.announcePort == 'number' ? portInfo.announcePort : portInfo.port,
+        };
+      }
+    } catch {
+      // Older cache entries stored only the listen port as a plain number.
+    }
+
+    const port = parseInt(cachedPort);
+    return {
+      port,
+      announcePort: port,
     };
   }
 
@@ -444,7 +475,11 @@ export class WindscribeClient {
   }
 
   private getTorrentPort(portForwardingInfo: PortForwardingInfo): number {
-    return this.ephemeralInternalPort ? portForwardingInfo.ports[1] : portForwardingInfo.ports[0];
+    return portForwardingInfo.ports[1] ?? portForwardingInfo.ports[0];
+  }
+
+  private getAnnouncePort(portForwardingInfo: PortForwardingInfo): number {
+    return this.ephemeralInternalPort ? portForwardingInfo.ports[0] : this.getTorrentPort(portForwardingInfo);
   }
 
   private async requestEphemeralPort(csrfInfo: CsrfInfo): Promise<PortForwardingInfo> {

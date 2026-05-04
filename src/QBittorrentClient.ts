@@ -1,5 +1,10 @@
 import {QBittorrent} from '@ctrl/qbittorrent';
 
+interface QBittorrentPorts {
+  listenPort: number,
+  announcePort: number,
+}
+
 export class QBittorrentClient {
 
   private client: QBittorrent;
@@ -33,26 +38,35 @@ export class QBittorrentClient {
     };
   }
 
-  async getPort() {
+  async getPorts(): Promise<QBittorrentPorts> {
     // make sure we are connected
     await this.updateConnection();
 
-    const {listen_port: listenPort} = await this.client.getPreferences();
+    const {listen_port: listenPort, announce_port: announcePort = listenPort} = await this.client.getPreferences() as {
+      listen_port: number,
+      announce_port?: number,
+    };
 
-    return listenPort;
+    return {
+      listenPort,
+      announcePort,
+    };
   }
 
-  async updatePort(port: number): Promise<void> {
+  async updatePort(port: number, announcePort: number = port): Promise<void> {
     // make sure we are connected
     await this.updateConnection();
 
     // update port
-    await this.client.setPreferences({
+    const preferences = {
       listen_port: port,
+      announce_port: announcePort,
       random_port: false, // turn of random port as well
-    });
+    } as Parameters<QBittorrent['setPreferences']>[0] & {announce_port: number};
 
-    console.log('Client port update requested.');
+    await this.client.setPreferences(preferences);
+
+    console.log(`Client port update requested. listen_port=${port}, announce_port=${announcePort}`);
   }
 
 }

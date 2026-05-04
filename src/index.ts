@@ -53,23 +53,26 @@ async function update() {
   }
 
   try {
-    let currentPort = await client.getPort();
+    let currentPorts = await client.getPorts();
     if (portInfo) {
-      if (currentPort == portInfo.port) {
+      if (currentPorts.listenPort == portInfo.port && currentPorts.announcePort == portInfo.announcePort) {
         // no need to update
-        console.log(`Current torrent port (${currentPort}) already matches windscribe port`);
+        console.log(`Current torrent ports already match windscribe ports. listen_port=${currentPorts.listenPort}, announce_port=${currentPorts.announcePort}`);
       } else {
-        // update port to a new one
-        console.log(`Current torrent port (${currentPort}) does not match windscribe port (${portInfo.port})`);
-        await client.updatePort(portInfo.port);
+        // update ports to new ones
+        console.log(`Current torrent ports (listen_port=${currentPorts.listenPort}, announce_port=${currentPorts.announcePort}) do not match windscribe ports (listen_port=${portInfo.port}, announce_port=${portInfo.announcePort})`);
+        await client.updatePort(portInfo.port, portInfo.announcePort);
 
         // double check
-        currentPort = await client.getPort();
-        if (currentPort != portInfo.port) {
-          throw new Error(`Unable to set torrent port! Current torrent port: ${currentPort}`);
+        currentPorts = await client.getPorts();
+        if (currentPorts.listenPort != portInfo.port) {
+          throw new Error(`Unable to set torrent listen port! Current torrent listen port: ${currentPorts.listenPort}`);
+        }
+        if (currentPorts.announcePort != portInfo.announcePort) {
+          throw new Error(`Unable to set torrent announce port! Current torrent announce port: ${currentPorts.announcePort}`);
         }
         // write the new port to configured gluetunCfgDir.
-        writeExportedPort(config.gluetunIface, currentPort);
+        writeExportedPort(config.gluetunIface, currentPorts.listenPort);
 
         // restart containers if configured
         if (docker) {
@@ -90,7 +93,7 @@ async function update() {
         console.log('Torrent port updated');
       }
     } else {
-      console.log(`Windscribe port is unknown, current torrent port is ${currentPort}`);
+      console.log(`Windscribe port is unknown, current torrent ports are listen_port=${currentPorts.listenPort}, announce_port=${currentPorts.announcePort}`);
     }
   } catch (error) {
     console.error('Torrent update failed', error);
