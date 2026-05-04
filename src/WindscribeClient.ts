@@ -53,6 +53,7 @@ export class WindscribeClient {
 
   private cache: Keyv<string>;
   private readonly totp: OTPAuth.TOTP | null = null;
+  private readonly ephemeralInternalPort: number | null;
 
   constructor(
     private username: string,
@@ -60,11 +61,13 @@ export class WindscribeClient {
     private flaresolverrUrl: string,
     cache?: KeyvStoreAdapter,
     totpSecret?: string,
+    ephemeralInternalPort?: number,
   ) {
     this.cache = new Keyv({
       store: cache,
       namespace: 'windscribe',
     });
+    this.ephemeralInternalPort = ephemeralInternalPort && ephemeralInternalPort > 0 ? ephemeralInternalPort : null;
 
     if (totpSecret) {
       this.totp = new OTPAuth.TOTP({
@@ -87,8 +90,17 @@ export class WindscribeClient {
     // check for current status
     let portForwardingInfo = await this.getPortForwardingInfo();
 
-    // check for mismatched ports if any present
-    if (portForwardingInfo.ports.length == 2 && portForwardingInfo.ports[0] != portForwardingInfo.ports[1]) {
+    const currentInternalPort = portForwardingInfo.ports[1];
+    // check for existing ports that do not match the configured request mode
+    if (this.ephemeralInternalPort && portForwardingInfo.epfExpires != 0 && currentInternalPort != this.ephemeralInternalPort) {
+      console.log(`Existing windscribe internal port (${currentInternalPort}) does not match configured port (${this.ephemeralInternalPort}), removing existing port`);
+      await this.removeEphemeralPort(csrfToken);
+
+      // update data to match current state
+      portForwardingInfo.ports = [];
+      portForwardingInfo.epfExpires = 0;
+      await this.cache.delete('port');
+    } else if (!this.ephemeralInternalPort && portForwardingInfo.ports.length == 2 && portForwardingInfo.ports[0] != portForwardingInfo.ports[1]) {
       console.log('Detected mismatched ports, removing existing ports');
       await this.removeEphemeralPort(csrfToken);
 
@@ -100,14 +112,17 @@ export class WindscribeClient {
 
     // request new port if we don't have any
     if (portForwardingInfo.epfExpires == 0) {
-      console.log('No windscribe port configured, requesting new matching ephemeral port');
-      portForwardingInfo = await this.requestMatchingEphemeralPort(csrfToken);
+      const portRequestDescription = this.ephemeralInternalPort
+        ? `specific internal ephemeral port ${this.ephemeralInternalPort}`
+        : 'matching ephemeral port';
+      console.log(`No windscribe port configured, requesting new ${portRequestDescription}`);
+      portForwardingInfo = await this.requestEphemeralPort(csrfToken);
     } else {
-      console.log(`Using existing windscribe ephemeral port: ${portForwardingInfo.ports[0]}`);
+      console.log(`Using existing windscribe ephemeral port: ${this.getTorrentPort(portForwardingInfo)}`);
     }
 
     const ret = {
-      port: portForwardingInfo.ports[0],
+      port: this.getTorrentPort(portForwardingInfo),
       expires: new Date((portForwardingInfo.epfExpires + 86400 * 7) * 1000),
     };
 
@@ -428,15 +443,20 @@ export class WindscribeClient {
     }
   }
 
-  private async requestMatchingEphemeralPort(csrfInfo: CsrfInfo): Promise<PortForwardingInfo> {
+  private getTorrentPort(portForwardingInfo: PortForwardingInfo): number {
+    return this.ephemeralInternalPort ? portForwardingInfo.ports[1] : portForwardingInfo.ports[0];
+  }
+
+  private async requestEphemeralPort(csrfInfo: CsrfInfo): Promise<PortForwardingInfo> {
     try {
       const sessionCookie = await this.getSession();
+      const port = this.ephemeralInternalPort?.toString() ?? '';
 
       // request new port
       const res = await axios.post<{success: number, message?: string, epf?: {ext: number, int: number, start_ts: number}}>('https://windscribe.com/staticips/postEphPort', qs.stringify({
         ctime: csrfInfo.csrfTime,
         ctoken: csrfInfo.csrfToken,
-        port: '', // empty string for a matching port
+        port, // empty string requests a matching port
       }), {
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
@@ -452,13 +472,18 @@ export class WindscribeClient {
 
       // epf should be present by this point
       const epf = res.data.epf!;
-      console.log(`Created new matching ephemeral port: ${epf.ext}`);
+      if (this.ephemeralInternalPort) {
+        console.log(`Created new specific ephemeral port: internal ${epf.int}, external ${epf.ext}`);
+      } else {
+        console.log(`Created new matching ephemeral port: ${epf.ext}`);
+      }
       return {
         epfExpires: epf.start_ts,
         ports: [epf.ext, epf.int],
       };
     } catch (error) {
-      throw new Error(`Failed to request matching ephemeral port: ${error instanceof Error ? error.message : error}`);
+      const portRequestDescription = this.ephemeralInternalPort ? 'specific ephemeral port' : 'matching ephemeral port';
+      throw new Error(`Failed to request ${portRequestDescription}: ${error instanceof Error ? error.message : error}`);
     }
   }
 

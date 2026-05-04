@@ -66,6 +66,12 @@ const configTemplate = {
     default: `${60 * 1000}`, // one minute
     type: Number,
   } as ConfigTemplateOptionalEntry<number>,
+  windscribeEphemeralInternalPort: {
+    envVariableName: 'WINDSCRIBE_EPHEMERAL_INTERNAL_PORT',
+    required: false,
+    default: '0', // 0 disables specific-port requests
+    type: Number,
+  } as ConfigTemplateOptionalEntry<number>,
   cronSchedule: {
     envVariableName: 'CRON_SCHEDULE',
     required: false,
@@ -131,8 +137,15 @@ export function getConfig(): Config {
     if (entry.type == Number) {
       const intValue = parseInt(value);
       if (isNaN(intValue)) {
-        throw new Error(`Environment variable ${entry.envVariableName}`);
+        throw new Error(`Environment variable ${entry.envVariableName} must be a number`);
       }
+
+      if (entry.envVariableName == 'WINDSCRIBE_EPHEMERAL_INTERNAL_PORT') {
+        if (!/^\d+$/.test(value) || intValue < 0 || intValue > 65535) {
+          throw new Error(`Environment variable ${entry.envVariableName} must be 0 or a port number from 1 to 65535`);
+        }
+      }
+
       return [name, intValue];
     }
 

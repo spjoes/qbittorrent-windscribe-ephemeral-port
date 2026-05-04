@@ -20,7 +20,7 @@ const cache = !config.cacheDir ? undefined : new KeyvFile({
 });
 
 // init windscribe client
-const windscribe = new WindscribeClient(config.windscribeUsername, config.windscribePassword, config.flaresolverrUrl, cache, config.windscribeTotpSecret);
+const windscribe = new WindscribeClient(config.windscribeUsername, config.windscribePassword, config.flaresolverrUrl, cache, config.windscribeTotpSecret, config.windscribeEphemeralInternalPort);
 
 // init torrent client
 const client = new QBittorrentClient(config.clientUrl, config.clientUsername, config.clientPassword);

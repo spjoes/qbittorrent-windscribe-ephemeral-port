@@ -41,6 +41,7 @@ Configuration is done using environment variables
 | CLIENT_URL | The URL for the qbittorrent web UI (eg: http://localhost:8080) | YES |  |
 | CLIENT_USERNAME | The username for the qbittorrent web UI | YES |  |
 | CLIENT_PASSWORD | The password for the qbittorrent web UI | YES |  |
+| WINDSCRIBE_EPHEMERAL_INTERNAL_PORT | Specific internal ephemeral port to request from Windscribe. Leave unset or set to `0` to request a matching port automatically. | NO | 0 |
 | CRON_SCHEDULE | An extra cron schedule used to periodically validate and update the port if needed. Disabled if left empty | NO |  |
 | WINDSCRIBE_RETRY_DELAY | how long to wait (in milliseconds) before retrying after a windscribe error. For example a failed login. | NO | 3600000 (1 hour) |
 | WINDSCRIBE_EXTRA_DELAY | how long to wait (in milliseconds) after the ephemeral port expires before trying to create a new one. | NO | 60000 (1 minute) |
@@ -89,6 +90,7 @@ services:
       # optional
       # - CLIENT_RETRY_DELAY=300000
       # - WINDSCRIBE_TOTP_SECRET=<your TOTP secret if 2FA is enabled>
+      # - WINDSCRIBE_EPHEMERAL_INTERNAL_PORT=21723
       # - WINDSCRIBE_RETRY_DELAY=3600000
       # - WINDSCRIBE_EXTRA_DELAY=60000
       # - CRON_SCHEDULE=
@@ -120,6 +122,7 @@ CLIENT_PASSWORD=<password for the qbittorrent Web UI>
 
 # optional
 # WINDSCRIBE_TOTP_SECRET=<your TOTP secret if 2FA is enabled>
+# WINDSCRIBE_EPHEMERAL_INTERNAL_PORT=21723
 # WINDSCRIBE_RETRY_DELAY=3600000
 # WINDSCRIBE_EXTRA_DELAY=60000
 # CRON_SCHEDULE=
