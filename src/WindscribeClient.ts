@@ -10,25 +10,15 @@ import {solveCaptcha} from './CaptchaSolver.js';
 
 const lock = new AsyncLock();
 
-const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36';
+const appVersion = '2.16.14';
+const platform = 'windows';
+const userAgent = `Windscribe/${appVersion} (${platform})`;
+const webUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36';
 
-// Secret key used for signing the auth token (from Windscribe's login JS)
-const AUTH_TOKEN_SECRET = 'my_mom_told_me_this_is_peak_engineering';
-
-// Helper functions for generating login parameters
-function generateNonce(): string {
-  return Math.random().toString(36).substring(2, 15);
-}
-
-function generateSessionId(): string {
-  return crypto.randomBytes(16).toString('hex');
-}
-
-function generateRequestId(): string {
-  const random = crypto.randomBytes(16);
-  const hash = crypto.createHash('sha256').update(random).digest();
-  return hash.slice(0, 16).toString('base64').replace(/[^a-zA-Z0-9]/g, '').substring(0, 24);
-}
+// Secret key used by the desktop API client to sign the auth token.
+const AUTH_TOKEN_SECRET = 'if_you_copy_this_you_might_die_a_painful_death';
+const apiBaseUrl = 'https://api.windscribe.com';
+const webBaseUrl = 'https://www.windscribe.com';
 
 function computeTokenSignature(token: string): string {
   return crypto.createHash('sha256').update(token + AUTH_TOKEN_SECRET).digest('hex');
@@ -44,6 +34,37 @@ interface PortForwardingInfo {
   ports: number[];
 }
 
+interface AuthTokenResponse {
+  errorCode?: number;
+  errorMessage?: string;
+  data?: {
+    token: string;
+    captcha?: {
+      background: string;
+      slider?: string;
+      top: number;
+      type?: string;
+      ascii_art?: string;
+    };
+  };
+}
+
+interface SessionResponse {
+  errorCode?: number;
+  errorMessage?: string;
+  data?: {
+    session_auth_hash?: string;
+  };
+}
+
+interface WebSessionResponse {
+  errorCode?: number;
+  errorMessage?: string;
+  data?: {
+    temp_session?: string;
+  };
+}
+
 export interface WindscribePort {
   port: number,
   announcePort: number,
@@ -57,9 +78,9 @@ export class WindscribeClient {
   private readonly ephemeralInternalPort: number | null;
 
   constructor(
-    private username: string,
-    private password: string,
-    private flaresolverrUrl: string,
+    private username: string | undefined,
+    private password: string | undefined,
+    private configuredAuthHash: string | undefined,
     cache?: KeyvStoreAdapter,
     totpSecret?: string,
     ephemeralInternalPort?: number,
@@ -173,157 +194,87 @@ export class WindscribeClient {
   private async getSession(forceLogin: boolean = false): Promise<string> {
     return lock.acquire('getSession', async () => {
       if (forceLogin) {
-        // force clear the session
         await this.cache.delete('sessionCookie');
       } else {
-        // try to get cached value
         const cachedCookie = await this.cache.get('sessionCookie');
         if (cachedCookie != undefined) {
           return cachedCookie;
         }
       }
 
-      // get a new session
-      console.log(`Invalid/missing session cookie, logging into windscribe`);
-      const sessionCookie = await this.login();
+      let authHash = await this.getAuthHash();
+      let sessionCookie: Cookie;
+      try {
+        sessionCookie = await this.createWebSession(authHash);
+      } catch (error) {
+        if (this.configuredAuthHash) {
+          throw error;
+        }
+        console.warn(`Cached Windscribe auth hash was rejected, refreshing it: ${error instanceof Error ? error.message : error}`);
+        authHash = await this.getAuthHash(true);
+        sessionCookie = await this.createWebSession(authHash);
+      }
       await this.cache.set('sessionCookie', sessionCookie.value, sessionCookie.expires.getTime() - Date.now());
-      console.log(`Successfully logged into windscribe, session expires in ${Math.floor((sessionCookie.expires.getTime() - Date.now()) / (100 * 60)) / 10} minutes`);
+      console.log(`Successfully created Windscribe web session, session expires in ${Math.floor((sessionCookie.expires.getTime() - Date.now()) / (100 * 60)) / 10} minutes`);
 
       return sessionCookie.value;
     });
   }
 
-  private async login(): Promise<Cookie> {
+  private async getAuthHash(forceLogin: boolean = false): Promise<string> {
+    if (this.configuredAuthHash) {
+      return this.configuredAuthHash;
+    }
+
+    if (forceLogin) {
+      await this.cache.delete('authHash');
+      await this.cache.delete('sessionCookie');
+    } else {
+      const cachedAuthHash = await this.cache.get('authHash');
+      if (cachedAuthHash != undefined) {
+        return cachedAuthHash;
+      }
+    }
+
+    console.log('Invalid/missing Windscribe auth hash, logging into Windscribe API');
+    const authHash = await this.login();
+    await this.cache.set('authHash', authHash);
+    console.log('Successfully logged into Windscribe API and cached auth hash');
+
+    return authHash;
+  }
+
+  private async login(): Promise<string> {
+    if (!this.username || !this.password) {
+      throw new Error('WINDSCRIBE_USERNAME and WINDSCRIBE_PASSWORD are required when WINDSCRIBE_AUTH_HASH is not set');
+    }
+
     try {
-      // Step 1: Use FlareSolverr to GET /login and solve CF, getting cf_clearance cookie and User-Agent
-      const getPayload = {
-        cmd: 'request.get',
-        url: 'https://windscribe.com/login',
-        maxTimeout: 60000,
-      };
-      const flareResponse = await axios.post(this.flaresolverrUrl, getPayload, {headers: {'Content-Type': 'application/json'}});
-      if (flareResponse.data.status !== 'ok') {
-        throw new Error(`FlareSolverr failed for GET /login: ${flareResponse.data.message}`);
-      }
-      if (!flareResponse.data.solution.cookies.some(({name}) => name.startsWith('cf_'))) {
-        throw new Error('No Cloudflare clearance cookies found in FlareSolverr response');
-      }
-      console.log('Successfully solved CF challenge using FlareSolverr');
-
-      const cfCookies = flareResponse.data.solution.cookies
-        .map(({name, value}) =>`${name}=${value}`)
-        .join('; ');
-      const cfUserAgent = flareResponse.data.solution.userAgent;
-
-      // Step 2: Get auth token from /authtoken/login endpoint
-      interface CaptchaChallenge {
-        background: string;
-        slider?: string;
-        top: number;
-        type: string;
-      }
-
-      interface AuthTokenResponse {
-        errorCode?: number;
-        errorMessage?: string;
-        data?: {
-          token: string;
-          token_id?: string;
-          captcha?: CaptchaChallenge;
-          access_level?: number;
-          signature?: string;
-          algorithm?: string;
-          version?: string;
-          request_id?: string;
-          entropy?: {
-            e: string;
-            s: string;
-          };
-        };
-      }
-
-      let authToken: string;
       let captchaSolution: { offset: number; trail: { x: number[]; y: number[] } } | null = null;
+      const authToken = await this.fetchAuthToken();
 
-      try {
-        const authResponse = await axios.post<AuthTokenResponse>(
-          'https://windscribe.com/authtoken/login',
-          qs.stringify({username: this.username, password: this.password}),
-          {
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-              'User-Agent': cfUserAgent,
-              'Cookie': cfCookies,
-              'Accept': 'application/json, text/plain, */*',
-              'Referer': 'https://windscribe.com/login',
-              'Origin': 'https://windscribe.com',
-            },
-          }
-        );
-
-        if (authResponse.data.errorCode) {
-          throw new Error(`Auth token error (${authResponse.data.errorCode}): ${authResponse.data.errorMessage}`);
-        }
-
-        if (!authResponse.data.data?.token) {
-          throw new Error('No token in auth response');
-        }
-
-        // Check if CAPTCHA is required (captcha data present means we need to solve it)
-        if (authResponse.data.data.captcha?.background) {
-          console.log('CAPTCHA challenge received, attempting to solve...');
-          console.log('CAPTCHA data keys:', Object.keys(authResponse.data.data.captcha));
-
-          const captchaData = authResponse.data.data.captcha;
-
-          // Solve the CAPTCHA using image processing
-          captchaSolution = await solveCaptcha({
-            background: captchaData.background,
-            slider: captchaData.slider,
-            top: captchaData.top,
-          });
-
-          console.log(`CAPTCHA solved: offset=${captchaSolution.offset}`);
-        }
-
-        authToken = authResponse.data.data.token;
-        console.log('Successfully obtained auth token' + (captchaSolution ? ' (with CAPTCHA)' : ''));
-      } catch (err) {
-        if (err.message.includes('Auth token error') || err.message.includes('CAPTCHA')) {
-          throw err;
-        }
-        throw new Error(`Failed to fetch auth token: ${err.message}`);
+      if (authToken.captcha?.background) {
+        console.log('CAPTCHA challenge received from Windscribe API, attempting to solve...');
+        captchaSolution = await solveCaptcha({
+          background: authToken.captcha.background,
+          slider: authToken.captcha.slider,
+          top: authToken.captcha.top,
+        });
+        console.log(`CAPTCHA solved: offset=${captchaSolution.offset}`);
+      } else if (authToken.captcha?.ascii_art) {
+        throw new Error('Windscribe returned an ASCII CAPTCHA, which cannot be solved non-interactively');
       }
 
-      // Step 3: Compute signature and generate login parameters
-      const secureTokenSig = computeTokenSignature(authToken);
-      const timestamp = Date.now();
-      const nonce = generateNonce();
-      const sessionId = generateSessionId();
-      const requestId = generateRequestId();
-
-      // Step 4: Build login form data
+      const secureTokenSig = computeTokenSignature(authToken.token);
       const loginData: Record<string, unknown> = {
-        login: '1',
         username: this.username,
         password: this.password,
-        secure_token: authToken,
+        '2fa_code': this.totp ? this.totp.generate() : '',
+        session_type_id: '3',
+        secure_token: authToken.token,
         secure_token_sig: secureTokenSig,
-        timestamp: timestamp,
-        nonce: nonce,
-        client_version: '1.0.0',
-        session_id: sessionId,
-        request_id: requestId,
-        upgrade: '0',
       };
 
-      // Add 2FA code if TOTP is configured
-      if (this.totp) {
-        loginData.code = this.totp.generate();
-        console.log('Generated 2FA TOTP code for login');
-      }
-
-      // Add CAPTCHA solution if required
       if (captchaSolution) {
         loginData.captcha_solution = captchaSolution.offset;
         loginData.captcha_trail = {
@@ -332,54 +283,120 @@ export class WindscribeClient {
         };
       }
 
-      // Step 5: Perform actual POST with all parameters
-      const loginFormData = qs.stringify(loginData, {arrayFormat: 'indices'});
-      const loginRes = await axios.post('https://windscribe.com/login', loginFormData, {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': cfUserAgent,
-          'Cookie': cfCookies,
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-          'Accept-Language': 'en-US,en;q=0.9',
-          'Origin': 'https://windscribe.com',
-          'Referer': 'https://windscribe.com/login',
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'same-origin',
-          'Upgrade-Insecure-Requests': '1',
+      const sessionResponse = await axios.post<SessionResponse>(
+        `${apiBaseUrl}/Session`,
+        qs.stringify(loginData, {arrayFormat: 'indices'}),
+        {
+          headers: this.apiHeaders(),
+          params: this.platformParams(),
         },
-        maxRedirects: 0,
-        validateStatus: status => [200, 302].includes(status), // Handle 200 error or 302 success
-      });
+      );
 
-      if (loginRes.status === 200) {
-        // Check for error in HTML: <div class="content_message error"><i></i>Error text</div> or <div class="content_message error">Error text</div>
-        const errorMatch = /<div class="content_message error">(?:<i><\/i>)?([^<]+)<\/div>/.exec(loginRes.data);
-        if (errorMatch && errorMatch[1]) {
-          const errorText = errorMatch[1].trim();
-          if (errorText.toLowerCase().includes('2fa')) {
-            throw new Error(`Windscribe 2FA required: ${errorText}. Set WINDSCRIBE_TOTP_SECRET environment variable.`);
-          }
-          throw new Error(`Windscribe login error: ${errorText}`);
-        }
-        throw new Error('Received 200 but no expected error message; check response');
+      if (sessionResponse.data.errorCode) {
+        throw new Error(`Session error (${sessionResponse.data.errorCode}): ${sessionResponse.data.errorMessage ?? 'No message'}`);
       }
 
-      // Extract ws_session_auth_hash from Set-Cookie header
-      const setCookieHeaders = loginRes.headers['set-cookie'];
-      if (!setCookieHeaders) {
-        throw new Error('No Set-Cookie header in login response');
-      }
-      const wsSessionCookie = parseCookie(setCookieHeaders, {map: true, decodeValues: true})['ws_session_auth_hash'];
-      if (!wsSessionCookie) {
-        throw new Error('Failed to find ws_session_auth_hash in Set-Cookie');
+      const authHash = sessionResponse.data.data?.session_auth_hash;
+      if (!authHash) {
+        throw new Error('No session_auth_hash in Windscribe API login response');
       }
 
-      console.log('Successfully got login cookies');
-      return wsSessionCookie;
+      return authHash;
     } catch (error) {
-      throw new Error(`Failed to log into windscribe: ${error.message}`);
+      throw new Error(`Failed to log into Windscribe API: ${error instanceof Error ? error.message : error}`);
     }
+  }
+
+  private async fetchAuthToken(): Promise<NonNullable<AuthTokenResponse['data']>> {
+    const authResponse = await axios.post<AuthTokenResponse>(
+      `${apiBaseUrl}/AuthToken/login`,
+      qs.stringify({username: this.username}),
+      {
+        headers: this.apiHeaders(),
+        params: this.platformParams(),
+      },
+    );
+
+    if (authResponse.data.errorCode) {
+      throw new Error(`Auth token error (${authResponse.data.errorCode}): ${authResponse.data.errorMessage ?? 'No message'}`);
+    }
+
+    if (!authResponse.data.data?.token) {
+      throw new Error('No token in auth response');
+    }
+
+    return authResponse.data.data;
+  }
+
+  private async createWebSession(authHash: string): Promise<Cookie> {
+    const webSessionResponse = await axios.post<WebSessionResponse>(
+      `${apiBaseUrl}/WebSession`,
+      qs.stringify({
+        temp_session: '1',
+        session_type_id: '1',
+      }),
+      {
+        headers: {
+          ...this.apiHeaders(),
+          Authorization: `Bearer ${authHash}`,
+        },
+        params: this.platformParams(),
+      },
+    );
+
+    if (webSessionResponse.data.errorCode) {
+      if (!this.configuredAuthHash) {
+        await this.cache.delete('authHash');
+      }
+      throw new Error(`WebSession error (${webSessionResponse.data.errorCode}): ${webSessionResponse.data.errorMessage ?? 'No message'}`);
+    }
+
+    const tempSession = webSessionResponse.data.data?.temp_session;
+    if (!tempSession) {
+      throw new Error('No temp_session in Windscribe WebSession response');
+    }
+
+    const res = await axios.get<string>(`${webBaseUrl}/myaccount`, {
+      headers: {
+        'User-Agent': webUserAgent,
+      },
+      params: {
+        temp_session: tempSession,
+      },
+      maxRedirects: 0,
+      validateStatus: status => [200, 302].includes(status),
+    });
+
+    const setCookieHeaders = res.headers['set-cookie'];
+    if (!setCookieHeaders) {
+      throw new Error('No Set-Cookie header in temp_session response');
+    }
+
+    const wsSessionCookie = parseCookie(setCookieHeaders, {map: true, decodeValues: true})['ws_session_auth_hash'];
+    if (!wsSessionCookie) {
+      throw new Error('Failed to find ws_session_auth_hash in temp_session response');
+    }
+
+    return wsSessionCookie;
+  }
+
+  private apiHeaders(): Record<string, string> {
+    return {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': userAgent,
+      'Accept': 'application/json, text/plain, */*',
+    };
+  }
+
+  private platformParams(): Record<string, string> {
+    return {
+      platform,
+      app_version: appVersion,
+    };
+  }
+
+  private async clearCachedWindscribeSession(): Promise<void> {
+    await this.cache.delete('sessionCookie');
   }
 
   private async getMyAccountCsrfToken(forceLogin: boolean = false): Promise<CsrfInfo> {
@@ -390,14 +407,14 @@ export class WindscribeClient {
       const res = await axios.get<string>('https://windscribe.com/myaccount', {
         headers: {
           'Cookie': `ws_session_auth_hash=${sessionCookie};`,
-          'User-Agent': userAgent,
+          'User-Agent': webUserAgent,
         },
         maxRedirects: 0,
         validateStatus: status => [302, 200].includes(status),
       });
 
       if (res.status == 302) {
-        // force to login again as the current session is invalid
+        await this.clearCachedWindscribeSession();
         return await this.getMyAccountCsrfToken(true);
       }
 
@@ -422,7 +439,7 @@ export class WindscribeClient {
       const res = await axios.get<string>('https://windscribe.com/staticips/load', {
         headers: {
           'Cookie': `ws_session_auth_hash=${sessionCookie};`,
-          'User-Agent': userAgent,
+          'User-Agent': webUserAgent,
         }
       });
 
@@ -454,7 +471,7 @@ export class WindscribeClient {
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
           'Cookie': `ws_session_auth_hash=${sessionCookie};`,
-          'User-Agent': userAgent,
+          'User-Agent': webUserAgent,
         }
       });
 
@@ -496,7 +513,7 @@ export class WindscribeClient {
         headers: {
           'content-type': 'application/x-www-form-urlencoded',
           'Cookie': `ws_session_auth_hash=${sessionCookie};`,
-          'User-Agent': userAgent,
+          'User-Agent': webUserAgent,
         }
       });
 

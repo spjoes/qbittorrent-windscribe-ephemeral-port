@@ -13,13 +13,6 @@ Also exports the new port as iptables rule for Gluetun.
 
 This repo is for qbittorrent only. For Deluge, check out the original repo this qbittorrent version is forked from: [deluge-windscribe-ephemeral-port](https://github.com/dumbasPL/deluge-windscribe-ephemeral-port)
 
-## Prerequisites
-Before using this project, you must deploy [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr). 
-FlareSolverr is a proxy server that is used to bypass Cloudflare challenge, which is required to Windscribe's login. 
-Without FlareSolverr, the script cannot successfully authenticate due to Cloudflare's bot mitigation. 
-
-Deploy it on your server (e.g., via Docker) and ensure it’s accessible to this script.
-
 ## Important information
 This project was designed to work along side containers like [linuxserver/qbittorrent](https://docs.linuxserver.io/images/docker-qbittorrent) in mind.  
 It will not help you route qbittorrent traffic through a VPN! For that, you can use [qdm12/gluetun](https://github.com/qdm12/gluetun). What it will do is to update the listening port of qbittorrent and export iptables rules for Gluetun.
@@ -34,10 +27,10 @@ Configuration is done using environment variables
 
 | Variable | Description | Required | Default |
 | :-: | :-: | :-: | :-: |
-| WINDSCRIBE_USERNAME | username you use to login at windscribe.com/login | YES |  |
-| WINDSCRIBE_PASSWORD | password you use to login at windscribe.com/login | YES |  |
+| WINDSCRIBE_AUTH_HASH | Existing Windscribe API `session_auth_hash`. If set, username/password login is skipped. | NO |  |
+| WINDSCRIBE_USERNAME | Windscribe username. Required when `WINDSCRIBE_AUTH_HASH` is not set. | NO |  |
+| WINDSCRIBE_PASSWORD | Windscribe password. Required when `WINDSCRIBE_AUTH_HASH` is not set. | NO |  |
 | WINDSCRIBE_TOTP_SECRET | TOTP secret for 2FA authentication (Base32 encoded). Required if 2FA is enabled on your Windscribe account. See [2FA Setup](#2fa-setup) | NO |  |
-| FLARESOLVERR_URL | The URL of [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) to bypass Cloudflare challenge | YES |  | 
 | CLIENT_URL | The URL for the qbittorrent web UI (eg: http://localhost:8080) | YES |  |
 | CLIENT_USERNAME | The username for the qbittorrent web UI. Required when `CLIENT_API_KEY` is not set | NO |  |
 | CLIENT_PASSWORD | The password for the qbittorrent web UI. Required when `CLIENT_API_KEY` is not set | NO |  |
@@ -81,9 +74,11 @@ services:
       # mounting docker socket is required for container restart feature
       # - /var/run/docker.sock:/var/run/docker.sock
     environment:
+      # Either provide an existing auth hash:
+      # - WINDSCRIBE_AUTH_HASH=<your windscribe session_auth_hash>
+      # or provide credentials so the app can obtain and cache one:
       - WINDSCRIBE_USERNAME=<your windscribe username>
       - WINDSCRIBE_PASSWORD=<your windscribe password>
-      - FLARESOLVERR_URL=http://flaresolverr:8191/v1
       - CLIENT_URL=<url of your qbittorrent Web UI>
       # use API key (qBittorrent ≥5.2, recommended)
       - CLIENT_API_KEY=<API key from WebUI Preferences → WebUI → API Key>
@@ -119,7 +114,8 @@ volumes:
 ```shell
 WINDSCRIBE_USERNAME=<your windscribe username>
 WINDSCRIBE_PASSWORD=<your windscribe password>
-FLARESOLVERR_URL=<url of your FlareSolverr>
+# Or use WINDSCRIBE_AUTH_HASH instead of username/password.
+# WINDSCRIBE_AUTH_HASH=<your windscribe session_auth_hash>
 CLIENT_URL=<url of your qbittorrent Web UI>
 # use API key (qBittorrent ≥5.2, recommended)
 CLIENT_API_KEY=<API key from WebUI Preferences → WebUI → API Key>

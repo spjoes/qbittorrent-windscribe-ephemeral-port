@@ -41,24 +41,24 @@ const configTemplate = {
   } as ConfigTemplateOptionalEntry<number>,
   windscribeUsername: {
     envVariableName: 'WINDSCRIBE_USERNAME',
-    required: true,
+    required: false,
     type: String,
-  } as ConfigTemplateRequiredEntry<string>,
+  } as ConfigTemplateOptionalEntry<string>,
   windscribePassword: {
     envVariableName: 'WINDSCRIBE_PASSWORD',
-    required: true,
+    required: false,
     type: String,
-  } as ConfigTemplateRequiredEntry<string>,
+  } as ConfigTemplateOptionalEntry<string>,
+  windscribeAuthHash: {
+    envVariableName: 'WINDSCRIBE_AUTH_HASH',
+    required: false,
+    type: String,
+  } as ConfigTemplateOptionalEntry<string>,
   windscribeTotpSecret: {
     envVariableName: 'WINDSCRIBE_TOTP_SECRET',
     required: false,
     type: String,
   } as ConfigTemplateOptionalEntry<string>,
-  flaresolverrUrl: {
-    envVariableName: 'FLARESOLVERR_URL',
-    required: true,
-    type: String,
-  } as ConfigTemplateRequiredEntry<string>,
   windscribeRetryDelay: {
     envVariableName: 'WINDSCRIBE_RETRY_DELAY',
     required: false,
@@ -161,6 +161,10 @@ export function getConfig(): Config {
 
   if (!config.clientApiKey && !(config.clientUsername && config.clientPassword)) {
     throw new Error('Either CLIENT_API_KEY or both CLIENT_USERNAME and CLIENT_PASSWORD must be provided');
+  }
+
+  if (!config.windscribeAuthHash && !(config.windscribeUsername && config.windscribePassword)) {
+    throw new Error('Either WINDSCRIBE_AUTH_HASH or both WINDSCRIBE_USERNAME and WINDSCRIBE_PASSWORD must be provided');
   }
 
   return config;
