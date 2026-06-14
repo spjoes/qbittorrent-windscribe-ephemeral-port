@@ -385,6 +385,7 @@ export class WindscribeClient {
       'Content-Type': 'application/x-www-form-urlencoded',
       'User-Agent': userAgent,
       'Accept': 'application/json, text/plain, */*',
+      'Authorization': 'Bearer 0',
     };
   }
 
