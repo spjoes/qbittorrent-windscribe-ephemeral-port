@@ -70,6 +70,7 @@ export async function solveCaptcha(captchaData: CaptchaData): Promise<CaptchaSol
     );
 
     let offset: number;
+    const bgMeta = await sharp(bgBuffer).metadata();
 
     if (captchaData.slider && captchaData.slider !== captchaData.background) {
       // If we have a separate slider image, use template matching
@@ -100,8 +101,13 @@ export async function solveCaptcha(captchaData: CaptchaData): Promise<CaptchaSol
       offset = await findCutoutPosition(bgBuffer, captchaData.top);
     }
 
+    const desktopCaptchaWidth = 274;
+    const desktopRunnerDiameter = 32;
+    const maxDesktopOffset = Math.floor(((desktopCaptchaWidth - desktopRunnerDiameter) * (bgMeta.width ?? desktopCaptchaWidth)) / desktopCaptchaWidth);
+    offset = Math.max(0, Math.min(offset, maxDesktopOffset));
+
     // Generate human-like mouse trail
-    const trail = generateMouseTrail(offset);
+    const trail = generateMouseTrail(offset, bgMeta.width ?? desktopCaptchaWidth, bgMeta.height ?? 154);
 
     if (DEBUG_CAPTCHA) {
       debugLog(`Final solution: offset=${offset}`);
@@ -219,12 +225,8 @@ function findTargetOutline(
     debugLog(`Background size: ${bgWidth}x${bgHeight}`);
   }
 
-  // Strategy: Find the white rectangular outline in the background directly.
-  // The outline is a thin (1-3 pixel) white border. We'll look for vertical
-  // lines of bright pixels that span a significant portion of the expected height.
-
-  const searchStartX = Math.floor(bgWidth * 0.3); // Target is typically on right side
-  const searchEndX = bgWidth - 50;
+  const searchStartX = Math.floor(bgWidth * 0.35);
+  const searchEndX = Math.floor(bgWidth * 0.95);
 
   // Expected vertical span of the target outline
   const expectedTop = topOffset;
@@ -235,116 +237,63 @@ function findTargetOutline(
     debugLog(`Searching for outline in x=${searchStartX}-${searchEndX}, y=${expectedTop}-${expectedBottom}`);
   }
 
-  // Scan each column for bright pixels that could be part of the left edge
-  // We're looking for a vertical line of bright pixels
   const columnScores: { x: number; score: number; brightPixels: number }[] = [];
 
-  for (let x = searchStartX; x < searchEndX; x++) {
-    let brightPixelCount = 0;
-    let totalBrightness = 0;
+  for (let x = Math.max(1, searchStartX); x < Math.min(bgWidth - 1, searchEndX); x++) {
+    let edgePixelCount = 0;
+    let edgeStrength = 0;
 
-    // Check this column in the expected vertical range
     for (let y = expectedTop; y <= expectedBottom; y++) {
       if (y >= 0 && y < bgHeight) {
-        const brightness = bgPixels[y * bgWidth + x];
-        if (brightness > 150) { // Lower threshold to catch the outline
-          brightPixelCount++;
-          totalBrightness += brightness;
+        const pixelIndex = y * bgWidth + x;
+        const gradient
+          = Math.abs(bgPixels[pixelIndex] - bgPixels[pixelIndex - 1])
+          + Math.abs(bgPixels[pixelIndex] - bgPixels[pixelIndex + 1]);
+
+        if (gradient > 20) {
+          edgePixelCount++;
+          edgeStrength += gradient;
         }
       }
     }
 
-    // Score based on how many bright pixels in this column (vertical line detection)
-    columnScores.push({x, score: totalBrightness, brightPixels: brightPixelCount});
+    columnScores.push({x, score: edgeStrength, brightPixels: edgePixelCount});
   }
 
-  // Find columns with significant bright pixel counts (potential vertical edges)
+  const maxColumnScore = Math.max(...columnScores.map(c => c.score), 0);
   const significantColumns = columnScores
-    .filter(c => c.brightPixels > expectedHeight * 0.1) // At least 10% of expected height
-    .sort((a, b) => b.brightPixels - a.brightPixels);
+    .filter(c => c.score > maxColumnScore * 0.35 && c.brightPixels > expectedHeight * 0.1)
+    .sort((a, b) => a.x - b.x);
 
   if (DEBUG_CAPTCHA) {
-    debugLog(`Top 10 columns by bright pixel count: ${JSON.stringify(significantColumns.slice(0, 10))}`);
+    debugLog(`Top 10 gradient columns: ${JSON.stringify([...columnScores].sort((a, b) => b.score - a.score).slice(0, 10))}`);
   }
 
-  // Strategy: Find pairs of vertical edges that could form left and right sides of the outline
-  // The target is a rectangle, so we expect two vertical edges roughly pieceWidth apart
-  // We want the LEFT edge of the pair
-
-  // Sort by x position to find edge pairs
-  const sortedByX = [...significantColumns].sort((a, b) => a.x - b.x);
-
-  if (DEBUG_CAPTCHA) {
-    debugLog(`Columns sorted by X position: ${JSON.stringify(sortedByX.slice(0, 10).map(c => ({x: c.x, bright: c.brightPixels})))}`);
-  }
-
-  // Look for pairs of edges that are approximately pieceWidth apart
-  const edgePairs: { left: number; right: number; score: number }[] = [];
-
-  for (let i = 0; i < sortedByX.length; i++) {
-    for (let j = i + 1; j < sortedByX.length; j++) {
-      const leftEdge = sortedByX[i];
-      const rightEdge = sortedByX[j];
-      const distance = rightEdge.x - leftEdge.x;
-
-      // The distance should be close to pieceWidth (allow some tolerance)
-      const expectedDistance = pieceWidth;
-      const tolerance = pieceWidth * 0.3; // 30% tolerance
-
-      if (Math.abs(distance - expectedDistance) < tolerance) {
-        // Good candidate pair
-        const pairScore = leftEdge.brightPixels + rightEdge.brightPixels;
-        edgePairs.push({left: leftEdge.x, right: rightEdge.x, score: pairScore});
-      }
+  const clusters: {left: number, right: number, score: number}[] = [];
+  for (const column of significantColumns) {
+    const current = clusters[clusters.length - 1];
+    if (current && column.x - current.right <= 4) {
+      current.right = column.x;
+      current.score += column.score;
+    } else {
+      clusters.push({left: column.x, right: column.x, score: column.score});
     }
   }
 
   if (DEBUG_CAPTCHA) {
-    debugLog(`Found ${edgePairs.length} edge pairs with correct spacing`);
-    if (edgePairs.length > 0) {
-      debugLog(`Top edge pairs: ${JSON.stringify(edgePairs.slice(0, 5))}`);
-    }
+    debugLog(`Gradient clusters: ${JSON.stringify(clusters.sort((a, b) => b.score - a.score).slice(0, 8))}`);
   }
 
   let bestLeftEdge = Math.floor(bgWidth * 0.5);
-
-  if (edgePairs.length > 0) {
-    // Pick the pair with highest combined score
-    const bestPair = edgePairs.sort((a, b) => b.score - a.score)[0];
-    bestLeftEdge = bestPair.left;
+  if (clusters.length > 0) {
+    const strongestScore = Math.max(...clusters.map(cluster => cluster.score));
+    const candidate = clusters
+      .filter(cluster => cluster.score >= strongestScore * 0.5)
+      .sort((a, b) => a.left - b.left)[0];
+    bestLeftEdge = candidate.left;
 
     if (DEBUG_CAPTCHA) {
-      debugLog(`Best edge pair: left=${bestPair.left}, right=${bestPair.right}, score=${bestPair.score}`);
-    }
-  } else {
-    // Fallback: no edge pairs found, need to determine if we found left or right edge
-    if (sortedByX.length > 0) {
-      const detectedX = sortedByX[0].x;
-      const searchMidpoint = (searchStartX + searchEndX) / 2;
-
-      // Check if detected columns form a tight cluster (single edge)
-      const clusterSpread = sortedByX.length > 1
-        ? sortedByX[sortedByX.length - 1].x - sortedByX[0].x
-        : 0;
-      const isSingleEdgeCluster = clusterSpread < pieceWidth * 0.3;
-
-      if (isSingleEdgeCluster && detectedX > searchMidpoint) {
-        // Detected edge is in the right portion of search area - likely the RIGHT edge
-        // Estimate left edge by subtracting piece width
-        bestLeftEdge = detectedX - pieceWidth;
-
-        if (DEBUG_CAPTCHA) {
-          debugLog(`No pairs found, detected cluster at x=${detectedX} appears to be RIGHT edge`);
-          debugLog(`Estimating left edge: ${detectedX} - ${pieceWidth} = ${bestLeftEdge}`);
-        }
-      } else {
-        // Detected edge is in the left/middle portion - assume it's the LEFT edge
-        bestLeftEdge = detectedX;
-
-        if (DEBUG_CAPTCHA) {
-          debugLog(`No pairs found, using detected column as left edge: x=${bestLeftEdge}`);
-        }
-      }
+      debugLog(`Best gradient cluster: left=${candidate.left}, right=${candidate.right}, score=${candidate.score}`);
     }
   }
 
@@ -468,16 +417,21 @@ async function findCutoutPosition(
  * @param {number} targetOffset - The target horizontal offset
  * @return {{x: number[], y: number[]}} Arrays of x and y coordinates
  */
-function generateMouseTrail(targetOffset: number): {x: number[]; y: number[]} {
+function generateMouseTrail(targetOffset: number, backgroundWidth: number, backgroundHeight: number): {x: number[]; y: number[]} {
   const x: number[] = [];
   const y: number[] = [];
 
-  // Number of sample points (every 5th movement is recorded per the JS)
-  const numPoints = Math.max(10, Math.floor(targetOffset / 8));
+  const maxTrailSize = 50;
+  const runnerRadius = 16;
+  const sliderY = backgroundHeight + 24;
+  const startX = runnerRadius;
+  const maxRunnerLeft = 274 - 2 * runnerRadius;
+  const scaledTargetOffset = Math.round((targetOffset * 274) / backgroundWidth);
+  const boundedTargetOffset = Math.max(0, Math.min(scaledTargetOffset, maxRunnerLeft));
+  const numPoints = Math.min(maxTrailSize, Math.max(10, Math.floor(boundedTargetOffset / 6)));
 
-  // Start position
-  let currentX = 0;
-  let currentY = 0;
+  let currentX = startX;
+  let currentY = sliderY;
 
   for (let i = 0; i < numPoints; i++) {
     // Progress from 0 to 1
@@ -487,22 +441,22 @@ function generateMouseTrail(targetOffset: number): {x: number[]; y: number[]} {
     const easeProgress = 1 - Math.pow(1 - progress, 2);
 
     // Target position with some overshoot near the end
-    const targetX = Math.round(targetOffset * easeProgress);
+    const targetX = Math.round(startX + boundedTargetOffset * easeProgress);
 
     // Add some random jitter (humans aren't perfectly smooth)
-    const jitterX = Math.round((Math.random() - 0.5) * 3);
-    const jitterY = Math.round((Math.random() - 0.5) * 8);
+    const jitterX = Math.round((Math.random() - 0.5) * 2);
+    const jitterY = Math.round((Math.random() - 0.5) * 4);
 
-    currentX = Math.max(0, Math.min(targetOffset, targetX + jitterX));
-    currentY = jitterY;
+    currentX = Math.max(startX, Math.min(startX + boundedTargetOffset, targetX + jitterX));
+    currentY = sliderY + jitterY;
 
     x.push(currentX);
     y.push(currentY);
   }
 
   // Ensure final position is at target
-  x[x.length - 1] = targetOffset;
-  y[y.length - 1] = 0;
+  x[x.length - 1] = startX + boundedTargetOffset;
+  y[y.length - 1] = sliderY;
 
   return {x, y};
 }

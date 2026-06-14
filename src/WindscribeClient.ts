@@ -1,5 +1,5 @@
 import AsyncLock from 'async-lock';
-import {default as axios} from 'axios';
+import {default as axios, type AxiosResponse} from 'axios';
 import Keyv, {type KeyvStoreAdapter} from 'keyv';
 import {Cookie, parse as parseCookie} from 'set-cookie-parser';
 import qs from 'qs';
@@ -18,10 +18,58 @@ const webUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.
 // Secret key used by the desktop API client to sign the auth token.
 const AUTH_TOKEN_SECRET = 'if_you_copy_this_you_might_die_a_painful_death';
 const apiBaseUrl = 'https://api.windscribe.com';
-const webBaseUrl = 'https://www.windscribe.com';
+const webBaseUrl = 'https://windscribe.com';
 
 function computeTokenSignature(token: string): string {
   return crypto.createHash('sha256').update(token + AUTH_TOKEN_SECRET).digest('hex');
+}
+
+function formatWindscribeBody(data: unknown): string {
+  if (data && typeof data == 'object') {
+    const body = data as {
+      errorCode?: unknown,
+      errorMessage?: unknown,
+      errorDescription?: unknown,
+    };
+    const parts = [
+      body.errorCode != null ? `errorCode=${String(body.errorCode)}` : null,
+      body.errorMessage != null ? `errorMessage=${String(body.errorMessage)}` : null,
+      body.errorDescription != null ? `errorDescription=${String(body.errorDescription)}` : null,
+    ].filter((part): part is string => part != null);
+
+    if (parts.length > 0) {
+      return parts.join(', ');
+    }
+  }
+
+  const serialized = typeof data == 'string' ? data : JSON.stringify(data);
+  return serialized.length > 500 ? `${serialized.substring(0, 500)}...` : serialized;
+}
+
+function formatAxiosError(error: unknown): string {
+  if (!axios.isAxiosError(error)) {
+    return error instanceof Error ? error.message : String(error);
+  }
+
+  const status = error.response?.status;
+  const statusText = error.response?.statusText;
+  const responseDescription = error.response
+    ? `status ${status}${statusText ? ` ${statusText}` : ''}: ${formatWindscribeBody(error.response.data)}`
+    : error.message;
+
+  return responseDescription;
+}
+
+function formatApiResponseError<T>(operation: string, response: AxiosResponse<T>): string {
+  return `${operation} failed with status ${response.status}: ${formatWindscribeBody(response.data)}`;
+}
+
+function apiValidateStatus(status: number): boolean {
+  return status < 500;
+}
+
+function formatCaptchaCoordinate(value: number): string {
+  return value.toFixed(3);
 }
 
 interface CsrfInfo {
@@ -221,6 +269,18 @@ export class WindscribeClient {
     });
   }
 
+  async debugStatus(): Promise<{csrfTime: number, csrfTokenFound: boolean, epfExpires: number, ports: number[]}> {
+    const csrf = await this.getMyAccountCsrfToken();
+    const portForwardingInfo = await this.getPortForwardingInfo();
+
+    return {
+      csrfTime: csrf.csrfTime,
+      csrfTokenFound: csrf.csrfToken.length > 0,
+      epfExpires: portForwardingInfo.epfExpires,
+      ports: portForwardingInfo.ports,
+    };
+  }
+
   private async getAuthHash(forceLogin: boolean = false): Promise<string> {
     if (this.configuredAuthHash) {
       return this.configuredAuthHash;
@@ -269,18 +329,23 @@ export class WindscribeClient {
       const loginData: Record<string, unknown> = {
         username: this.username,
         password: this.password,
-        '2fa_code': this.totp ? this.totp.generate() : '',
         session_type_id: '3',
         secure_token: authToken.token,
         secure_token_sig: secureTokenSig,
       };
 
+      if (this.totp) {
+        loginData['2fa_code'] = this.totp.generate();
+      }
+
       if (captchaSolution) {
-        loginData.captcha_solution = captchaSolution.offset;
-        loginData.captcha_trail = {
-          x: captchaSolution.trail.x,
-          y: captchaSolution.trail.y,
-        };
+        loginData.captcha_solution = captchaSolution.offset.toString();
+        captchaSolution.trail.x.forEach((x, i) => {
+          loginData[`captcha_trail[x][${i}]`] = formatCaptchaCoordinate(x);
+        });
+        captchaSolution.trail.y.forEach((y, i) => {
+          loginData[`captcha_trail[y][${i}]`] = formatCaptchaCoordinate(y);
+        });
       }
 
       const sessionResponse = await axios.post<SessionResponse>(
@@ -289,11 +354,16 @@ export class WindscribeClient {
         {
           headers: this.apiHeaders(),
           params: this.platformParams(),
+          validateStatus: apiValidateStatus,
         },
       );
 
+      if (sessionResponse.status >= 400) {
+        throw new Error(formatApiResponseError('Session login', sessionResponse));
+      }
+
       if (sessionResponse.data.errorCode) {
-        throw new Error(`Session error (${sessionResponse.data.errorCode}): ${sessionResponse.data.errorMessage ?? 'No message'}`);
+        throw new Error(`Session error: ${formatWindscribeBody(sessionResponse.data)}`);
       }
 
       const authHash = sessionResponse.data.data?.session_auth_hash;
@@ -303,7 +373,7 @@ export class WindscribeClient {
 
       return authHash;
     } catch (error) {
-      throw new Error(`Failed to log into Windscribe API: ${error instanceof Error ? error.message : error}`);
+      throw new Error(`Failed to log into Windscribe API: ${formatAxiosError(error)}`);
     }
   }
 
@@ -314,11 +384,16 @@ export class WindscribeClient {
       {
         headers: this.apiHeaders(),
         params: this.platformParams(),
+        validateStatus: apiValidateStatus,
       },
     );
 
+    if (authResponse.status >= 400) {
+      throw new Error(formatApiResponseError('Auth token request', authResponse));
+    }
+
     if (authResponse.data.errorCode) {
-      throw new Error(`Auth token error (${authResponse.data.errorCode}): ${authResponse.data.errorMessage ?? 'No message'}`);
+      throw new Error(`Auth token error: ${formatWindscribeBody(authResponse.data)}`);
     }
 
     if (!authResponse.data.data?.token) {
@@ -341,14 +416,22 @@ export class WindscribeClient {
           Authorization: `Bearer ${authHash}`,
         },
         params: this.platformParams(),
+        validateStatus: apiValidateStatus,
       },
     );
+
+    if (webSessionResponse.status >= 400) {
+      if (!this.configuredAuthHash) {
+        await this.cache.delete('authHash');
+      }
+      throw new Error(formatApiResponseError('Web session request', webSessionResponse));
+    }
 
     if (webSessionResponse.data.errorCode) {
       if (!this.configuredAuthHash) {
         await this.cache.delete('authHash');
       }
-      throw new Error(`WebSession error (${webSessionResponse.data.errorCode}): ${webSessionResponse.data.errorMessage ?? 'No message'}`);
+      throw new Error(`WebSession error: ${formatWindscribeBody(webSessionResponse.data)}`);
     }
 
     const tempSession = webSessionResponse.data.data?.temp_session;
@@ -364,7 +447,7 @@ export class WindscribeClient {
         temp_session: tempSession,
       },
       maxRedirects: 0,
-      validateStatus: status => [200, 302].includes(status),
+      validateStatus: status => [200, 301, 302].includes(status),
     });
 
     const setCookieHeaders = res.headers['set-cookie'];
@@ -382,7 +465,7 @@ export class WindscribeClient {
 
   private apiHeaders(): Record<string, string> {
     return {
-      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Type': 'text/html; charset=utf-8',
       'User-Agent': userAgent,
       'Accept': 'application/json, text/plain, */*',
       'Authorization': 'Bearer 0',
@@ -428,7 +511,7 @@ export class WindscribeClient {
         csrfToken: csrfToken,
       };
     } catch (error) {
-      throw new Error(`Failed to get csrf token from my account page: ${error.message}`);
+      throw new Error(`Failed to get csrf token from my account page: ${formatAxiosError(error)}`);
     }
   }
 
@@ -456,7 +539,7 @@ export class WindscribeClient {
         ports,
       };
     } catch (error) {
-      throw new Error(`Failed to get port forwarding info: ${error.message}`);
+      throw new Error(`Failed to get port forwarding info: ${formatAxiosError(error)}`);
     }
   }
 
@@ -488,7 +571,7 @@ export class WindscribeClient {
         console.log('Deleted ephemeral port');
       }
     } catch (error) {
-      throw new Error(`Failed to delete ephemeral port: ${error.message}`);
+      throw new Error(`Failed to delete ephemeral port: ${formatAxiosError(error)}`);
     }
   }
 
