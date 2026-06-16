@@ -1,138 +1,258 @@
-# [qbittorrent-windscribe-ephemeral-port](https://github.com/AndriiBarabash/qbittorrent-windscribe-ephemeral-port)
+# qbittorrent-windscribe-ephemeral-port
 
-## Disclaimer
-This project is not intended to be taken as a serious or professionally maintained solution.
-It is provided "as is" for educational or experimental purposes only.
-The author assumes no responsibility for any issues, damages, or legal consequences arising from its use, including but not limited to misuse, security vulnerabilities, or compatibility problems.
+Automatically keeps qBittorrent's listening ports in sync with a Windscribe ephemeral port forward.
 
-Use at your own risk.
+This fork lives at:
 
-## Introduction
-Automatically create ephemeral ports in windscribe and update qbittorrent config to use the new port.
-Also exports the new port as iptables rule for Gluetun.
+https://github.com/spjoes/qbittorrent-windscribe-ephemeral-port
 
-This repo is for qbittorrent only. For Deluge, check out the original repo this qbittorrent version is forked from: [deluge-windscribe-ephemeral-port](https://github.com/dumbasPL/deluge-windscribe-ephemeral-port)
+## What It Does
 
-## Important information
-This project was designed to work along side containers like [linuxserver/qbittorrent](https://docs.linuxserver.io/images/docker-qbittorrent) in mind.  
-It will not help you route qbittorrent traffic through a VPN! For that, you can use [qdm12/gluetun](https://github.com/qdm12/gluetun). What it will do is to update the listening port of qbittorrent and export iptables rules for Gluetun.
+Windscribe ephemeral port forwards expire on a weekly cycle. This app:
 
-## Gluetun compatibility
-If you want the Gluetun container to pick up the iptables changes, you have to restart it. This project can do it for you, but to use it you **must** mount the Docker socket (`/var/run/docker.sock`) into this container.
-> **Warning:** Mounting the Docker socket gives the container full control of your Docker host.  
-> Only use this feature if you trust the container and code!
+- logs into Windscribe through the same API flow used by the desktop client
+- creates a temporary Windscribe web session
+- reads the current ephemeral port forward
+- creates a new ephemeral port forward when needed
+- updates qBittorrent's listen and announce ports
+- optionally writes a Gluetun iptables rule file
+- optionally restarts Gluetun and qBittorrent containers after a port change
 
-# Configuration
-Configuration is done using environment variables
+This app does not route qBittorrent through a VPN. Use something like Gluetun for VPN routing.
 
-| Variable | Description | Required | Default |
-| :-: | :-: | :-: | :-: |
-| WINDSCRIBE_AUTH_HASH | Existing Windscribe API `session_auth_hash`. If set, username/password login is skipped. | NO |  |
-| WINDSCRIBE_USERNAME | Windscribe username. Required when `WINDSCRIBE_AUTH_HASH` is not set. | NO |  |
-| WINDSCRIBE_PASSWORD | Windscribe password. Required when `WINDSCRIBE_AUTH_HASH` is not set. | NO |  |
-| WINDSCRIBE_TOTP_SECRET | TOTP secret for 2FA authentication (Base32 encoded). Required if 2FA is enabled on your Windscribe account. See [2FA Setup](#2fa-setup) | NO |  |
-| CLIENT_URL | The URL for the qbittorrent web UI (eg: http://localhost:8080) | YES |  |
-| CLIENT_USERNAME | The username for the qbittorrent web UI. Required when `CLIENT_API_KEY` is not set | NO |  |
-| CLIENT_PASSWORD | The password for the qbittorrent web UI. Required when `CLIENT_API_KEY` is not set | NO |  |
-| CLIENT_API_KEY | API key for the qbittorrent web UI (requires qBittorrent ≥5.2). Generate it in WebUI Preferences → WebUI → API Key. Either this or `CLIENT_USERNAME` + `CLIENT_PASSWORD` must be set | NO |  |
-| WINDSCRIBE_EPHEMERAL_INTERNAL_PORT | Specific internal ephemeral port to request from Windscribe. Leave unset or set to `0` to request a matching port automatically. | NO | 0 |
-| CRON_SCHEDULE | An extra cron schedule used to periodically validate and update the port if needed. Disabled if left empty | NO |  |
-| WINDSCRIBE_RETRY_DELAY | how long to wait (in milliseconds) before retrying after a windscribe error. For example a failed login. | NO | 3600000 (1 hour) |
-| WINDSCRIBE_EXTRA_DELAY | how long to wait (in milliseconds) after the ephemeral port expires before trying to create a new one. | NO | 60000 (1 minute) |
-| CLIENT_RETRY_DELAY | how long to wait (in milliseconds) before retrying after a qbittorrent error. For example a failed login. | NO | 300000 (5 minutes) |
-| CACHE_DIR | A directory where to store cached data like windscribe session cookies | NO | `/cache` in the docker container and `./cache` everywhere else |
-| GLUETUN_DIR | A directory where to write iptables entry for gluetun | NO | `/post-rules.txt` in the docker container and `./post-rules.txt` everywhere else |
-| GLUETUN_IFACE | Gluetun vpn interface name | NO | `tun0` |
-| GLUETUN_CONTAINER_NAME | Name of the Gluetun Docker container to restart. If set, the app will try to restart the container after updating iptables rules. Both container names are required | NO | |
-| QBITTORRENT_CONTAINER_NAME | Name of the qbittorrent Docker container to restart. If set, the app will try to restart the container after updating iptables rules. Both container names are required | NO | |
+## Windscribe Login
 
-## 2FA Setup
+This fork does not require FlareSolverr or Byparr.
 
-If you have Two-Factor Authentication (2FA) enabled on your Windscribe account, you need to provide the TOTP secret so this application can generate authentication codes automatically.
+It uses Windscribe's API login flow directly:
 
-When you set up 2FA in Windscribe, you're shown a QR code. This QR code contains a URI like:
-```
-otpauth://totp/Windscribe:yourusername?secret=ABCDEFGHIJKLMNOP&issuer=Windscribe
-```
+- `WINDSCRIBE_AUTH_HASH` can be supplied to skip username/password login.
+- If no auth hash is supplied, `WINDSCRIBE_USERNAME` and `WINDSCRIBE_PASSWORD` are used.
+- The app caches the Windscribe API auth hash after a successful login.
+- Web sessions are short lived and are recreated from the cached auth hash when needed.
 
-You need to extract the `secret=XXX` value from this URI. Some authenticator apps allow you to view the secret. Or you can decode the QR code.  
-The secret is a Base32-encoded string (uppercase letters A-Z and digits 2-7). Set it as `WINDSCRIBE_TOTP_SECRET` in your configuration.
+Keep `CACHE_DIR` persistent. Without persistent cache, the container may need to login again after every recreate.
 
-# Running
-## Using docker (and docker compose in this example)
+## Important Notes
+
+- Windscribe may still require captcha during a fresh password login.
+- The app includes a local image-based solver for Windscribe's slider captcha, but avoiding fresh logins is still the more reliable path.
+- If your Windscribe account uses 2FA, set `WINDSCRIBE_TOTP_SECRET`.
+- qBittorrent can authenticate with either an API key or username/password.
+- qBittorrent API keys require qBittorrent 5.2 or newer.
+
+## Configuration
+
+Configuration is done with environment variables.
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `WINDSCRIBE_AUTH_HASH` | No | | Existing Windscribe API `session_auth_hash`. If set, username/password login is skipped. |
+| `WINDSCRIBE_USERNAME` | No | | Windscribe username. Required when `WINDSCRIBE_AUTH_HASH` is not set. |
+| `WINDSCRIBE_PASSWORD` | No | | Windscribe password. Required when `WINDSCRIBE_AUTH_HASH` is not set. |
+| `WINDSCRIBE_TOTP_SECRET` | No | | Base32 TOTP secret for Windscribe 2FA. |
+| `WINDSCRIBE_EPHEMERAL_INTERNAL_PORT` | No | `0` | Specific internal ephemeral port to request. Use `0` or leave unset to request a matching port. |
+| `WINDSCRIBE_RETRY_DELAY` | No | `3600000` | Retry delay after a Windscribe error, in milliseconds. |
+| `WINDSCRIBE_EXTRA_DELAY` | No | `60000` | Delay after Windscribe port expiry before requesting a new one, in milliseconds. |
+| `CLIENT_URL` | Yes | | qBittorrent Web UI URL, for example `http://qbittorrent:8080`. |
+| `CLIENT_API_KEY` | No | | qBittorrent Web UI API key. Either this or `CLIENT_USERNAME` and `CLIENT_PASSWORD` is required. |
+| `CLIENT_USERNAME` | No | | qBittorrent Web UI username. |
+| `CLIENT_PASSWORD` | No | | qBittorrent Web UI password. |
+| `CLIENT_RETRY_DELAY` | No | `300000` | Retry delay after a qBittorrent error, in milliseconds. |
+| `CRON_SCHEDULE` | No | | Optional cron schedule for extra periodic checks. |
+| `CACHE_DIR` | No | Docker: `/cache`, local: `./cache` | Directory used to persist Windscribe auth/session cache and cached port state. |
+| `GLUETUN_DIR` | No | Docker: `/post-rules.txt`, local: `./post-rules.txt` | File path where Gluetun iptables rules are written. |
+| `GLUETUN_IFACE` | No | `tun0` | Gluetun VPN interface name. |
+| `GLUETUN_CONTAINER_NAME` | No | | Docker container name for Gluetun. Required with `QBITTORRENT_CONTAINER_NAME` for automatic restarts. |
+| `QBITTORRENT_CONTAINER_NAME` | No | | Docker container name for qBittorrent. Required with `GLUETUN_CONTAINER_NAME` for automatic restarts. |
+
+Either `WINDSCRIBE_AUTH_HASH` or both `WINDSCRIBE_USERNAME` and `WINDSCRIBE_PASSWORD` must be set.
+
+Either `CLIENT_API_KEY` or both `CLIENT_USERNAME` and `CLIENT_PASSWORD` must be set.
+
+## Docker Compose
+
+Build this fork locally:
 
 ```yaml
-version: '3.8'
 services:
   qbittorrent-windscribe-ephemeral-port:
-    image: andriibarabash/qbittorrent-windscribe-ephemeral-port:latest
+    build: .
     restart: unless-stopped
-    volumes:
-      - windscribe-cache:/cache
-      # optional
-      # - ./post-rules.txt:/app/post-rules.txt
-      # mounting docker socket is required for container restart feature
-      # - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      # Either provide an existing auth hash:
-      # - WINDSCRIBE_AUTH_HASH=<your windscribe session_auth_hash>
-      # or provide credentials so the app can obtain and cache one:
-      - WINDSCRIBE_USERNAME=<your windscribe username>
-      - WINDSCRIBE_PASSWORD=<your windscribe password>
-      - CLIENT_URL=<url of your qbittorrent Web UI>
-      # use API key (qBittorrent ≥5.2, recommended)
-      - CLIENT_API_KEY=<API key from WebUI Preferences → WebUI → API Key>
-      # or username/password (all qBittorrent versions)
-      # - CLIENT_USERNAME=<username for the qbittorrent Web UI>
-      # - CLIENT_PASSWORD=<password for the qbittorrent Web UI>
-
-      # optional
-      # - CLIENT_RETRY_DELAY=300000
-      # - WINDSCRIBE_TOTP_SECRET=<your TOTP secret if 2FA is enabled>
-      # - WINDSCRIBE_EPHEMERAL_INTERNAL_PORT=21723
-      # - WINDSCRIBE_RETRY_DELAY=3600000
-      # - WINDSCRIBE_EXTRA_DELAY=60000
-      # - CRON_SCHEDULE=
-      # - CACHE_DIR=/cache
-      # - GLUETUN_DIR=/post-rules.txt
-      # - GLUETUN_IFACE=tun0
-      # - GLUETUN_CONTAINER_NAME=gluetun
-      # - QBITTORRENT_CONTAINER_NAME=qbittorrent
-
-volumes:
-  windscribe-cache:
+      WINDSCRIBE_USERNAME: your_windscribe_username
+      WINDSCRIBE_PASSWORD: your_windscribe_password
+      CLIENT_URL: http://qbittorrent:8080
+      CLIENT_API_KEY: your_qbittorrent_api_key
+      CACHE_DIR: /cache
+      GLUETUN_DIR: /post-rules.txt
+      GLUETUN_IFACE: tun0
+      # Optional:
+      # WINDSCRIBE_TOTP_SECRET: your_base32_totp_secret
+      # WINDSCRIBE_EPHEMERAL_INTERNAL_PORT: 0
+      # GLUETUN_CONTAINER_NAME: gluetun
+      # QBITTORRENT_CONTAINER_NAME: qbittorrent
+    volumes:
+      - ./cache:/cache
+      - ./post-rules.txt:/post-rules.txt
+      # Required only if using automatic container restarts:
+      # - /var/run/docker.sock:/var/run/docker.sock
 ```
 
-## Using nodejs
+Mounting `/var/run/docker.sock` gives this container control over Docker on the host. Only mount it if you want automatic container restarts and trust the code.
 
-**This project requires Node.js version 16 or newer**  
-**This project uses [yarn](https://classic.yarnpkg.com/) to manage dependencies, make sure you have it installed first.**
+## Unraid
 
-1. clone this repository
-2. Install dependencies by running `yarn install`
-3. Create a `.env` file in the root of the project with the necessary configuration
-```shell
-WINDSCRIBE_USERNAME=<your windscribe username>
-WINDSCRIBE_PASSWORD=<your windscribe password>
-# Or use WINDSCRIBE_AUTH_HASH instead of username/password.
-# WINDSCRIBE_AUTH_HASH=<your windscribe session_auth_hash>
-CLIENT_URL=<url of your qbittorrent Web UI>
-# use API key (qBittorrent ≥5.2, recommended)
-CLIENT_API_KEY=<API key from WebUI Preferences → WebUI → API Key>
-# or username/password (all qBittorrent versions)
-# CLIENT_USERNAME=<username of your qbittorrent Web UI>
-# CLIENT_PASSWORD=<password for the qbittorrent Web UI>
+Recommended persistent cache mapping:
 
-# optional
-# WINDSCRIBE_TOTP_SECRET=<your TOTP secret if 2FA is enabled>
-# WINDSCRIBE_EPHEMERAL_INTERNAL_PORT=21723
-# WINDSCRIBE_RETRY_DELAY=3600000
-# WINDSCRIBE_EXTRA_DELAY=60000
-# CRON_SCHEDULE=
-# CACHE_DIR=./cache
-# GLUETUN_CONTAINER_NAME=gluetun
-# QBITTORRENT_CONTAINER_NAME=qbittorrent
+```text
+Container Path: /cache
+Host Path: /mnt/user/appdata/qbittorrent-windscribe-ephemeral-port/cache
+Access Mode: Read/Write
 ```
-4. Build and start using `yarn install`
 
-Tip: you can use tools like pm2 to manage nodejs applications
+Set:
+
+```text
+CACHE_DIR=/cache
+```
+
+Optional Gluetun rule output:
+
+```text
+Container Path: /post-rules.txt
+Host Path: /mnt/user/appdata/qbittorrent-windscribe-ephemeral-port/post-rules.txt
+Access Mode: Read/Write
+```
+
+Set:
+
+```text
+GLUETUN_DIR=/post-rules.txt
+```
+
+If you want this app to restart Gluetun and qBittorrent after a port change, also mount the Docker socket:
+
+```text
+Container Path: /var/run/docker.sock
+Host Path: /var/run/docker.sock
+Access Mode: Read/Write
+```
+
+Then set:
+
+```text
+GLUETUN_CONTAINER_NAME=gluetun
+QBITTORRENT_CONTAINER_NAME=qbittorrent
+```
+
+## Local Development
+
+Install dependencies:
+
+```bash
+yarn install
+```
+
+Create `.env`:
+
+```env
+WINDSCRIBE_USERNAME=your_windscribe_username
+WINDSCRIBE_PASSWORD=your_windscribe_password
+# Or:
+# WINDSCRIBE_AUTH_HASH=your_windscribe_session_auth_hash
+
+CLIENT_URL=http://localhost:8080
+CLIENT_API_KEY=your_qbittorrent_api_key
+# Or:
+# CLIENT_USERNAME=admin
+# CLIENT_PASSWORD=adminadmin
+
+CACHE_DIR=./cache
+GLUETUN_DIR=./post-rules.txt
+```
+
+Run the app:
+
+```bash
+yarn start
+```
+
+Build:
+
+```bash
+yarn build
+```
+
+Lint:
+
+```bash
+yarn lint
+```
+
+## Windscribe Debug Check
+
+Use this to test only the Windscribe login/session/port-read path:
+
+```bash
+yarn windscribe:debug
+```
+
+This does not update qBittorrent and does not create or delete Windscribe ports. It only checks:
+
+- API auth hash login/cache
+- temporary web session creation
+- CSRF token parsing
+- current ephemeral port status
+
+## 2FA
+
+If Windscribe 2FA is enabled, set `WINDSCRIBE_TOTP_SECRET`.
+
+The secret is the Base32 value inside the authenticator QR URI:
+
+```text
+otpauth://totp/Windscribe:username?secret=ABCDEFGHIJKLMNOP&issuer=Windscribe
+```
+
+Use only the `secret` value:
+
+```env
+WINDSCRIBE_TOTP_SECRET=ABCDEFGHIJKLMNOP
+```
+
+## Cache Behavior
+
+The cache stores:
+
+- Windscribe API auth hash
+- temporary Windscribe web session cookie
+- last known Windscribe port
+
+The web session is short lived, commonly around 60 minutes. The app recreates it from the cached auth hash when needed.
+
+The auth hash is the important long-lived value. Persist `CACHE_DIR` so restarts do not force fresh password login.
+
+## Troubleshooting
+
+Run:
+
+```bash
+yarn windscribe:debug
+```
+
+Common issues:
+
+| Error | Meaning |
+| --- | --- |
+| `Invalid CAPTCHA solution` | Fresh password login required captcha and the local solver missed. Retry later or use a cached/provided `WINDSCRIBE_AUTH_HASH`. |
+| `Missing environment variable CLIENT_URL` | Set `CLIENT_URL` to qBittorrent's Web UI URL. |
+| `Either CLIENT_API_KEY or both CLIENT_USERNAME and CLIENT_PASSWORD must be provided` | Configure qBittorrent authentication. |
+| `Either WINDSCRIBE_AUTH_HASH or both WINDSCRIBE_USERNAME and WINDSCRIBE_PASSWORD must be provided` | Configure Windscribe authentication. |
+| `Failed to get csrf token` | Windscribe web session creation or account page parsing failed. Run `yarn windscribe:debug` for a narrower error. |
+
+## Credits
+
+This project is based on earlier qBittorrent and Deluge Windscribe ephemeral port forwarder projects, with this fork adding the direct Windscribe API login/session flow and removing the FlareSolverr/Byparr requirement.
+
+Use at your own risk.
