@@ -7,12 +7,13 @@ import {WindscribeClient, WindscribePort} from './WindscribeClient.js';
 import {schedule} from 'node-cron';
 import * as fs from 'fs';
 import Docker from 'dockerode';
+import {setTimeout as sleep} from 'timers/promises';
 
 // load config
 const config = getConfig();
 
 // Docker client setup
-const docker = config.gluetunContainerName && config.qbittorrentContainerName ? new Docker({socketPath: '/var/run/docker.sock'}) : null;
+const docker = config.gluetunContainerName || config.qbittorrentContainerName ? new Docker({socketPath: '/var/run/docker.sock'}) : null;
 
 // init cache (if configured)
 const cache = !config.cacheDir ? undefined : new KeyvFile({
@@ -81,21 +82,7 @@ async function update() {
         // write the new port to configured gluetunCfgDir.
         writeExportedPort(config.gluetunIface, currentPorts.listenPort);
 
-        // restart containers if configured
-        if (docker) {
-          docker.getContainer(config.gluetunContainerName)
-            .restart()
-            .then(() => {
-              console.log(`Restarted Gluetun container: ${config.gluetunContainerName}`);
-              return docker.getContainer(config.qbittorrentContainerName).restart();
-            })
-            .then(() => {
-              console.log(`Restarted qbittorrent container: ${config.qbittorrentContainerName}`);
-            })
-            .catch(err => {
-              console.error('Failed to restart container:', err);
-            });
-        }
+        await restartConfiguredContainers(portInfo);
 
         console.log('Torrent port updated');
       }
@@ -173,6 +160,53 @@ iptables -A INPUT -i ${iface} -p udp --dport ${port} -j ACCEPT`;
     flag: 'w',
   });
   console.log('New port %d exported to file: %s with iface: %s', port, config.gluetunCfgDir, iface);
+}
+
+async function restartConfiguredContainers(portInfo: WindscribePort): Promise<void> {
+  if (!docker) {
+    return;
+  }
+
+  if (config.gluetunContainerName) {
+    await restartContainer(config.gluetunContainerName, 'Gluetun');
+  }
+
+  if (config.qbittorrentContainerName) {
+    await restartContainer(config.qbittorrentContainerName, 'qBittorrent');
+    await reapplyQbittorrentListenPortAfterRestart(portInfo);
+  }
+}
+
+async function restartContainer(containerName: string, label: string): Promise<void> {
+  console.log(`Restarting ${label} container: ${containerName}`);
+  await docker.getContainer(containerName).restart();
+  console.log(`Restarted ${label} container: ${containerName}`);
+}
+
+async function reapplyQbittorrentListenPortAfterRestart(portInfo: WindscribePort): Promise<void> {
+  const attempts = 12;
+  const delay = 5000;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await client.updateListenPort(portInfo.port);
+      const currentPorts = await client.getPorts();
+
+      if (currentPorts.listenPort != portInfo.port) {
+        throw new Error(`Current ports are listen_port=${currentPorts.listenPort}, announce_port=${currentPorts.announcePort}`);
+      }
+
+      console.log(`Re-applied qBittorrent listen port after restart. listen_port=${currentPorts.listenPort}, announce_port=${currentPorts.announcePort}`);
+      return;
+    } catch (error) {
+      if (attempt == attempts) {
+        throw new Error(`Failed to re-apply qBittorrent listen port after restart: ${error instanceof Error ? error.message : error}`);
+      }
+
+      console.log(`qBittorrent is not ready after restart, retrying listen port re-apply in ${delay / 1000} seconds (${attempt}/${attempts})`);
+      await sleep(delay);
+    }
+  }
 }
 
 // always run on start

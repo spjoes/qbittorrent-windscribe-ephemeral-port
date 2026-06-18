@@ -69,4 +69,16 @@ export class QBittorrentClient {
     console.log(`Client port update requested. listen_port=${port}, announce_port=${announcePort}`);
   }
 
+  async updateListenPort(port: number): Promise<void> {
+    // make sure we are connected
+    await this.updateConnection();
+
+    await this.client.setPreferences({
+      listen_port: port,
+      random_port: false,
+    });
+
+    console.log(`Client listen port update requested. listen_port=${port}`);
+  }
+
 }

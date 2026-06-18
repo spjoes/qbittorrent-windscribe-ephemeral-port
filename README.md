@@ -16,7 +16,7 @@ Windscribe ephemeral port forwards expire on a weekly cycle. This app:
 - creates a new ephemeral port forward when needed
 - updates qBittorrent's listen and announce ports
 - optionally writes a Gluetun iptables rule file
-- optionally restarts Gluetun and qBittorrent containers after a port change
+- optionally restarts Gluetun and/or qBittorrent containers after a port change
 
 This app does not route qBittorrent through a VPN. Use something like Gluetun for VPN routing.
 
@@ -63,8 +63,8 @@ Configuration is done with environment variables.
 | `CACHE_DIR` | No | Docker: `/cache`, local: `./cache` | Directory used to persist Windscribe auth/session cache and cached port state. |
 | `GLUETUN_DIR` | No | Docker: `/post-rules.txt`, local: `./post-rules.txt` | File path where Gluetun iptables rules are written. |
 | `GLUETUN_IFACE` | No | `tun0` | Gluetun VPN interface name. |
-| `GLUETUN_CONTAINER_NAME` | No | | Docker container name for Gluetun. Required with `QBITTORRENT_CONTAINER_NAME` for automatic restarts. |
-| `QBITTORRENT_CONTAINER_NAME` | No | | Docker container name for qBittorrent. Required with `GLUETUN_CONTAINER_NAME` for automatic restarts. |
+| `GLUETUN_CONTAINER_NAME` | No | | Docker container name for Gluetun. If set, Gluetun is restarted after a port change. |
+| `QBITTORRENT_CONTAINER_NAME` | No | | Docker container name for qBittorrent. If set, qBittorrent is restarted after a port change and the listening port is re-applied after restart. |
 
 Either `WINDSCRIBE_AUTH_HASH` or both `WINDSCRIBE_USERNAME` and `WINDSCRIBE_PASSWORD` must be set.
 
@@ -131,7 +131,7 @@ Set:
 GLUETUN_DIR=/post-rules.txt
 ```
 
-If you want this app to restart Gluetun and qBittorrent after a port change, also mount the Docker socket:
+If you want this app to restart Gluetun and/or qBittorrent after a port change, also mount the Docker socket:
 
 ```text
 Container Path: /var/run/docker.sock
@@ -139,7 +139,7 @@ Host Path: /var/run/docker.sock
 Access Mode: Read/Write
 ```
 
-Then set:
+Then set one or both container names:
 
 ```text
 GLUETUN_CONTAINER_NAME=gluetun
