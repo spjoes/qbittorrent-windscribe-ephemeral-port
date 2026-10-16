@@ -10,7 +10,7 @@ import {solveCaptcha} from './CaptchaSolver.js';
 
 const lock = new AsyncLock();
 
-const appVersion = '2.16.14';
+const appVersion = '2.24.13';
 const platform = 'windows';
 const userAgent = `Windscribe/${appVersion} (${platform})`;
 const webUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36';
@@ -279,6 +279,52 @@ export class WindscribeClient {
       epfExpires: portForwardingInfo.epfExpires,
       ports: portForwardingInfo.ports,
     };
+  }
+
+  async signOut(): Promise<void> {
+    await lock.acquire('getSession', async () => {
+      const sessionCookie = await this.cache.get('sessionCookie');
+      if (sessionCookie != undefined) {
+        if (await this.deleteApiSession(sessionCookie, 'web session')) {
+          await this.cache.delete('sessionCookie');
+        }
+      }
+
+      // a configured auth hash belongs to the user, deleting it would break their config
+      if (this.configuredAuthHash) {
+        return;
+      }
+
+      const authHash = await this.cache.get('authHash');
+      if (authHash != undefined && await this.deleteApiSession(authHash, 'API session')) {
+        await this.cache.delete('authHash');
+        await this.cache.delete('sessionCookie');
+      }
+    });
+  }
+
+  // returns false if the session may still be alive, so the cached value is kept and reused instead of logging in again
+  private async deleteApiSession(authHash: string, description: string): Promise<boolean> {
+    try {
+      const response = await axios.delete<{errorCode?: number, errorMessage?: string}>(`${apiBaseUrl}/Session`, {
+        headers: {
+          ...this.apiHeaders(),
+          Authorization: `Bearer ${authHash}`,
+        },
+        params: this.platformParams(),
+        validateStatus: apiValidateStatus,
+      });
+
+      if (response.status >= 400 || response.data?.errorCode) {
+        console.log(`Windscribe ${description} sign out was rejected, treating it as already ended: ${formatWindscribeBody(response.data)}`);
+      } else {
+        console.log(`Signed out of Windscribe ${description}`);
+      }
+      return true;
+    } catch (error) {
+      console.warn(`Failed to sign out of Windscribe ${description}: ${formatAxiosError(error)}`);
+      return false;
+    }
   }
 
   private async getAuthHash(forceLogin: boolean = false): Promise<string> {

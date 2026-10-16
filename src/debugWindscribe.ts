@@ -35,5 +35,9 @@ try {
   console.log(`Current ephemeral port expires: ${expires ? expires.toISOString() : 'none'}`);
 } catch (error) {
   console.error('Windscribe debug check failed:', error instanceof Error ? error.message : error);
-  process.exit(1);
+  process.exitCode = 1;
+} finally {
+  if (envString('WINDSCRIBE_SIGN_OUT') != '0') {
+    await windscribe.signOut();
+  }
 }

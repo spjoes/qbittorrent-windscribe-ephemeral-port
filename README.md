@@ -30,6 +30,7 @@ It uses Windscribe's API login flow directly:
 - If no auth hash is supplied, `WINDSCRIBE_USERNAME` and `WINDSCRIBE_PASSWORD` are used.
 - The app caches the Windscribe API auth hash after a successful login.
 - Web sessions are short lived and are recreated from the cached auth hash when needed.
+- After each update the app signs out of the web session and API session it created, so sessions do not pile up on your account. Windscribe disables accounts that collect too many sessions. A supplied `WINDSCRIBE_AUTH_HASH` is never signed out. Set `WINDSCRIBE_SIGN_OUT=0` to keep sessions alive between runs instead.
 
 Keep `CACHE_DIR` persistent. Without persistent cache, the container may need to login again after every recreate.
 
@@ -54,6 +55,7 @@ Configuration is done with environment variables.
 | `WINDSCRIBE_EPHEMERAL_INTERNAL_PORT` | No | `0` | Specific internal ephemeral port to request. Use `0` or leave unset to request a matching port. |
 | `WINDSCRIBE_RETRY_DELAY` | No | `3600000` | Retry delay after a Windscribe error, in milliseconds. |
 | `WINDSCRIBE_EXTRA_DELAY` | No | `60000` | Delay after Windscribe port expiry before requesting a new one, in milliseconds. |
+| `WINDSCRIBE_SIGN_OUT` | No | `1` | Sign out of Windscribe sessions created by the app after each run. Set `0` to keep the cached auth hash between runs. |
 | `CLIENT_URL` | Yes | | qBittorrent Web UI URL, for example `http://qbittorrent:8080`. |
 | `CLIENT_API_KEY` | No | | qBittorrent Web UI API key. Either this or `CLIENT_USERNAME` and `CLIENT_PASSWORD` is required. |
 | `CLIENT_USERNAME` | No | | qBittorrent Web UI username. |
@@ -205,6 +207,8 @@ This does not update qBittorrent and does not create or delete Windscribe ports.
 - CSRF token parsing
 - current ephemeral port status
 
+It signs out afterwards unless `WINDSCRIBE_SIGN_OUT=0`.
+
 ## 2FA
 
 If Windscribe 2FA is enabled, set `WINDSCRIBE_TOTP_SECRET`.
@@ -231,7 +235,7 @@ The cache stores:
 
 The web session is short lived, commonly around 60 minutes. The app recreates it from the cached auth hash when needed.
 
-The auth hash is the important long-lived value. Persist `CACHE_DIR` so restarts do not force fresh password login.
+With `WINDSCRIBE_SIGN_OUT=0`, the auth hash is the important long-lived value. Persist `CACHE_DIR` so restarts do not force fresh password login. With sign out enabled (the default), each run does a fresh password login, and the auth hash is only kept if signing out fails, so it can be reused next time.
 
 ## Troubleshooting
 

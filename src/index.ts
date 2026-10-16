@@ -60,6 +60,10 @@ async function update() {
     portInfo = await windscribe.getPort();
   }
 
+  if (config.windscribeSignOut) {
+    await windscribe.signOut().catch(error => console.warn('Windscribe sign out failed: ', error));
+  }
+
   try {
     let currentPorts = await client.getPorts();
     if (portInfo) {

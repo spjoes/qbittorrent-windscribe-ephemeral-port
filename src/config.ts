@@ -77,6 +77,12 @@ const configTemplate = {
     default: '0', // 0 disables specific-port requests
     type: Number,
   } as ConfigTemplateOptionalEntry<number>,
+  windscribeSignOut: {
+    envVariableName: 'WINDSCRIBE_SIGN_OUT',
+    required: false,
+    default: '1', // 0 keeps sessions alive between runs
+    type: Number,
+  } as ConfigTemplateOptionalEntry<number>,
   cronSchedule: {
     envVariableName: 'CRON_SCHEDULE',
     required: false,
