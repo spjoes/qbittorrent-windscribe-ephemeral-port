@@ -10,9 +10,8 @@ https://github.com/spjoes/qbittorrent-windscribe-ephemeral-port
 
 Windscribe ephemeral port forwards expire on a weekly cycle. This app:
 
-- logs into Windscribe through the same API flow used by the desktop client
-- creates a temporary Windscribe web session
-- reads the current ephemeral port forward
+- logs into Windscribe through the same API flow used by the Windscribe website
+- reads the current ephemeral port forward from the Windscribe API
 - creates a new ephemeral port forward when needed
 - updates qBittorrent's listen and announce ports
 - optionally writes a Gluetun iptables rule file
@@ -28,9 +27,9 @@ It uses Windscribe's API login flow directly:
 
 - `WINDSCRIBE_AUTH_HASH` can be supplied to skip username/password login.
 - If no auth hash is supplied, `WINDSCRIBE_USERNAME` and `WINDSCRIBE_PASSWORD` are used.
-- The app caches the Windscribe API auth hash after a successful login.
-- Web sessions are short lived and are recreated from the cached auth hash when needed.
-- After each update the app signs out of the web session and API session it created, so sessions do not pile up on your account. Windscribe disables accounts that collect too many sessions. A supplied `WINDSCRIBE_AUTH_HASH` is never signed out. Set `WINDSCRIBE_SIGN_OUT=0` to keep sessions alive between runs instead.
+- The app caches the Windscribe API auth hash after a successful login, and logs in again if Windscribe rejects it.
+- Port forwards are read, requested, and deleted through `api.windscribe.com/EphPortForwarding` using that auth hash.
+- After each update the app signs out of the session it created, so sessions do not pile up on your account. Windscribe disables accounts that collect too many sessions. A supplied `WINDSCRIBE_AUTH_HASH` is never signed out. Set `WINDSCRIBE_SIGN_OUT=0` to keep sessions alive between runs instead.
 
 Keep `CACHE_DIR` persistent. Without persistent cache, the container may need to login again after every recreate.
 
@@ -203,8 +202,6 @@ yarn windscribe:debug
 This does not update qBittorrent and does not create or delete Windscribe ports. It only checks:
 
 - API auth hash login/cache
-- temporary web session creation
-- CSRF token parsing
 - current ephemeral port status
 
 It signs out afterwards unless `WINDSCRIBE_SIGN_OUT=0`.
@@ -230,10 +227,7 @@ WINDSCRIBE_TOTP_SECRET=ABCDEFGHIJKLMNOP
 The cache stores:
 
 - Windscribe API auth hash
-- temporary Windscribe web session cookie
 - last known Windscribe port
-
-The web session is short lived, commonly around 60 minutes. The app recreates it from the cached auth hash when needed.
 
 With `WINDSCRIBE_SIGN_OUT=0`, the auth hash is the important long-lived value. Persist `CACHE_DIR` so restarts do not force fresh password login. With sign out enabled (the default), each run does a fresh password login, and the auth hash is only kept if signing out fails, so it can be reused next time.
 
@@ -253,7 +247,7 @@ Common issues:
 | `Missing environment variable CLIENT_URL` | Set `CLIENT_URL` to qBittorrent's Web UI URL. |
 | `Either CLIENT_API_KEY or both CLIENT_USERNAME and CLIENT_PASSWORD must be provided` | Configure qBittorrent authentication. |
 | `Either WINDSCRIBE_AUTH_HASH or both WINDSCRIBE_USERNAME and WINDSCRIBE_PASSWORD must be provided` | Configure Windscribe authentication. |
-| `Failed to get csrf token` | Windscribe web session creation or account page parsing failed. Run `yarn windscribe:debug` for a narrower error. |
+| `Failed to get port forwarding info` | The Windscribe `EphPortForwarding` API rejected the request. Run `yarn windscribe:debug` for a narrower error. |
 
 ## Credits
 

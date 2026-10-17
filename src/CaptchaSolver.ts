@@ -107,7 +107,7 @@ export async function solveCaptcha(captchaData: CaptchaData): Promise<CaptchaSol
     offset = Math.max(0, Math.min(offset, maxDesktopOffset));
 
     // Generate human-like mouse trail
-    const trail = generateMouseTrail(offset, bgMeta.width ?? desktopCaptchaWidth, bgMeta.height ?? 154);
+    const trail = generateMouseTrail(offset);
 
     if (DEBUG_CAPTCHA) {
       debugLog(`Final solution: offset=${offset}`);
@@ -412,51 +412,37 @@ async function findCutoutPosition(
 }
 
 /**
- * Generate a human-like mouse trail from 0 to the target offset.
- * Simulates natural mouse movement with slight variations.
- * @param {number} targetOffset - The target horizontal offset
+ * Generate a human-like mouse trail matching the windscribe.com slider captcha.
+ * The web client samples every 5th mousemove: x is the drag distance from the start
+ * in background image pixels, y is the raw vertical drift from the start in screen pixels.
+ * @param {number} targetOffset - The target horizontal offset in background image pixels
  * @return {{x: number[], y: number[]}} Arrays of x and y coordinates
  */
-function generateMouseTrail(targetOffset: number, backgroundWidth: number, backgroundHeight: number): {x: number[]; y: number[]} {
+function generateMouseTrail(targetOffset: number): {x: number[]; y: number[]} {
   const x: number[] = [];
   const y: number[] = [];
 
-  const maxTrailSize = 50;
-  const runnerRadius = 16;
-  const sliderY = backgroundHeight + 24;
-  const startX = runnerRadius;
-  const maxRunnerLeft = 274 - 2 * runnerRadius;
-  const scaledTargetOffset = Math.round((targetOffset * 274) / backgroundWidth);
-  const boundedTargetOffset = Math.max(0, Math.min(scaledTargetOffset, maxRunnerLeft));
-  const numPoints = Math.min(maxTrailSize, Math.max(10, Math.floor(boundedTargetOffset / 6)));
-
-  let currentX = startX;
-  let currentY = sliderY;
+  const numPoints = Math.max(5, Math.min(12, Math.round(targetOffset / 60) + 2));
+  const overshoot = Math.round(targetOffset * (0.02 + Math.random() * 0.03));
+  let currentY = 0;
 
   for (let i = 0; i < numPoints; i++) {
-    // Progress from 0 to 1
     const progress = (i + 1) / numPoints;
+    const easeProgress = 1 - Math.pow(1 - progress, 3);
+    let currentX = targetOffset * easeProgress + (Math.random() - 0.5) * 6;
 
-    // Ease-out curve for natural deceleration
-    const easeProgress = 1 - Math.pow(1 - progress, 2);
+    // overshoot slightly before settling back on the target, like a human drag
+    if (i == numPoints - 2) {
+      currentX = targetOffset + overshoot;
+    } else if (i == numPoints - 1) {
+      currentX = targetOffset + Math.round(Math.random() * 4);
+    }
 
-    // Target position with some overshoot near the end
-    const targetX = Math.round(startX + boundedTargetOffset * easeProgress);
+    currentY = Math.max(-12, Math.min(12, currentY + Math.round((Math.random() - 0.5) * 8)));
 
-    // Add some random jitter (humans aren't perfectly smooth)
-    const jitterX = Math.round((Math.random() - 0.5) * 2);
-    const jitterY = Math.round((Math.random() - 0.5) * 4);
-
-    currentX = Math.max(startX, Math.min(startX + boundedTargetOffset, targetX + jitterX));
-    currentY = sliderY + jitterY;
-
-    x.push(currentX);
+    x.push(Math.max(0, Math.round(currentX)));
     y.push(currentY);
   }
-
-  // Ensure final position is at target
-  x[x.length - 1] = startX + boundedTargetOffset;
-  y[y.length - 1] = sliderY;
 
   return {x, y};
 }

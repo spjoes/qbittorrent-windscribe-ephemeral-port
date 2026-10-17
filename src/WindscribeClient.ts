@@ -1,21 +1,16 @@
 import AsyncLock from 'async-lock';
 import {default as axios, type AxiosResponse} from 'axios';
 import Keyv, {type KeyvStoreAdapter} from 'keyv';
-import {Cookie, parse as parseCookie} from 'set-cookie-parser';
 import qs from 'qs';
 import crypto from 'crypto';
 import * as OTPAuth from 'otpauth';
 import {solveCaptcha} from './CaptchaSolver.js';
 
-
 const lock = new AsyncLock();
 
-const appVersion = '2.24.13';
-const platform = 'windows';
-const userAgent = `Windscribe/${appVersion} (${platform})`;
-const webUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36';
+const webUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:158.0) Gecko/20100101 Firefox/158.0';
 
-// Secret key used by the desktop API client to sign the auth token.
+// Secret key used by Windscribe clients to sign the auth token, only needed if the API stops returning token_sig.
 const AUTH_TOKEN_SECRET = 'if_you_copy_this_you_might_die_a_painful_death';
 const apiBaseUrl = 'https://api.windscribe.com';
 const webBaseUrl = 'https://windscribe.com';
@@ -68,50 +63,51 @@ function apiValidateStatus(status: number): boolean {
   return status < 500;
 }
 
-function formatCaptchaCoordinate(value: number): string {
-  return value.toFixed(3);
-}
-
-interface CsrfInfo {
-  csrfTime: number;
-  csrfToken: string;
+function isAuthError(response: AxiosResponse<ApiResponse<unknown>>): boolean {
+  // 701 is Windscribe's "session invalid" error code
+  return response.status == 401 || response.status == 403 || Number(response.data?.errorCode) == 701;
 }
 
 interface PortForwardingInfo {
+  id: number | null;
   epfExpires: number;
   ports: number[];
 }
 
-interface AuthTokenResponse {
+interface ApiResponse<T> {
   errorCode?: number;
   errorMessage?: string;
-  data?: {
-    token: string;
-    captcha?: {
-      background: string;
-      slider?: string;
-      top: number;
-      type?: string;
-      ascii_art?: string;
-    };
-  };
+  errorDescription?: string;
+  data?: T;
 }
 
-interface SessionResponse {
-  errorCode?: number;
-  errorMessage?: string;
-  data?: {
-    session_auth_hash?: string;
+type AuthTokenResponse = ApiResponse<{
+  token: string;
+  token_sig?: string;
+  captcha?: {
+    background: string;
+    slider?: string;
+    top: number;
+    type?: string;
+    ascii_art?: string;
   };
+}>;
+
+type SessionResponse = ApiResponse<{
+  session_auth_hash?: string;
+}>;
+
+interface EphemeralPort {
+  id?: number | string;
+  ext: number | string;
+  int: number | string;
+  start_ts: number | string;
 }
 
-interface WebSessionResponse {
-  errorCode?: number;
-  errorMessage?: string;
-  data?: {
-    temp_session?: string;
-  };
-}
+type EphPortForwardingResponse = ApiResponse<{
+  success?: number;
+  epf?: EphemeralPort | false;
+}>;
 
 export interface WindscribePort {
   port: number,
@@ -153,30 +149,24 @@ export class WindscribeClient {
   }
 
   async updatePort(): Promise<WindscribePort> {
-    // get csrf token and time to pass on to future requests
-    // this will also verify if we are logged in and login if not
-    const csrfToken = await this.getMyAccountCsrfToken();
-
-    // check for current status
+    // check for current status, this will also login if needed
     let portForwardingInfo = await this.getPortForwardingInfo();
 
     const currentInternalPort = portForwardingInfo.ports[1];
     // check for existing ports that do not match the configured request mode
     if (this.ephemeralInternalPort && portForwardingInfo.epfExpires != 0 && currentInternalPort != this.ephemeralInternalPort) {
       console.log(`Existing windscribe internal port (${currentInternalPort}) does not match configured port (${this.ephemeralInternalPort}), removing existing port`);
-      await this.removeEphemeralPort(csrfToken);
+      await this.removeEphemeralPort(portForwardingInfo);
 
       // update data to match current state
-      portForwardingInfo.ports = [];
-      portForwardingInfo.epfExpires = 0;
+      portForwardingInfo = {id: null, ports: [], epfExpires: 0};
       await this.cache.delete('port');
     } else if (!this.ephemeralInternalPort && portForwardingInfo.ports.length == 2 && portForwardingInfo.ports[0] != portForwardingInfo.ports[1]) {
       console.log('Detected mismatched ports, removing existing ports');
-      await this.removeEphemeralPort(csrfToken);
+      await this.removeEphemeralPort(portForwardingInfo);
 
       // update data to match current state
-      portForwardingInfo.ports = [];
-      portForwardingInfo.epfExpires = 0;
+      portForwardingInfo = {id: null, ports: [], epfExpires: 0};
       await this.cache.delete('port');
     }
 
@@ -186,7 +176,7 @@ export class WindscribeClient {
         ? `specific internal ephemeral port ${this.ephemeralInternalPort}`
         : 'matching ephemeral port';
       console.log(`No windscribe port configured, requesting new ${portRequestDescription}`);
-      portForwardingInfo = await this.requestEphemeralPort(csrfToken);
+      portForwardingInfo = await this.requestEphemeralPort();
     } else {
       console.log(`Using existing windscribe ephemeral port: ${this.getTorrentPort(portForwardingInfo)}`);
     }
@@ -239,90 +229,52 @@ export class WindscribeClient {
     };
   }
 
-  private async getSession(forceLogin: boolean = false): Promise<string> {
-    return lock.acquire('getSession', async () => {
-      if (forceLogin) {
-        await this.cache.delete('sessionCookie');
-      } else {
-        const cachedCookie = await this.cache.get('sessionCookie');
-        if (cachedCookie != undefined) {
-          return cachedCookie;
-        }
-      }
-
-      let authHash = await this.getAuthHash();
-      let sessionCookie: Cookie;
-      try {
-        sessionCookie = await this.createWebSession(authHash);
-      } catch (error) {
-        if (this.configuredAuthHash) {
-          throw error;
-        }
-        console.warn(`Cached Windscribe auth hash was rejected, refreshing it: ${error instanceof Error ? error.message : error}`);
-        authHash = await this.getAuthHash(true);
-        sessionCookie = await this.createWebSession(authHash);
-      }
-      await this.cache.set('sessionCookie', sessionCookie.value, sessionCookie.expires.getTime() - Date.now());
-      console.log(`Successfully created Windscribe web session, session expires in ${Math.floor((sessionCookie.expires.getTime() - Date.now()) / (100 * 60)) / 10} minutes`);
-
-      return sessionCookie.value;
-    });
-  }
-
-  async debugStatus(): Promise<{csrfTime: number, csrfTokenFound: boolean, epfExpires: number, ports: number[]}> {
-    const csrf = await this.getMyAccountCsrfToken();
+  async debugStatus(): Promise<{epfExpires: number, ports: number[]}> {
     const portForwardingInfo = await this.getPortForwardingInfo();
 
     return {
-      csrfTime: csrf.csrfTime,
-      csrfTokenFound: csrf.csrfToken.length > 0,
       epfExpires: portForwardingInfo.epfExpires,
       ports: portForwardingInfo.ports,
     };
   }
 
   async signOut(): Promise<void> {
-    await lock.acquire('getSession', async () => {
-      const sessionCookie = await this.cache.get('sessionCookie');
-      if (sessionCookie != undefined) {
-        if (await this.deleteApiSession(sessionCookie, 'web session')) {
-          await this.cache.delete('sessionCookie');
-        }
-      }
-
+    await lock.acquire('getAuthHash', async () => {
       // a configured auth hash belongs to the user, deleting it would break their config
       if (this.configuredAuthHash) {
         return;
       }
 
       const authHash = await this.cache.get('authHash');
-      if (authHash != undefined && await this.deleteApiSession(authHash, 'API session')) {
+      if (authHash != undefined && await this.deleteApiSession(authHash)) {
         await this.cache.delete('authHash');
-        await this.cache.delete('sessionCookie');
       }
     });
   }
 
-  // returns false if the session may still be alive, so the cached value is kept and reused instead of logging in again
-  private async deleteApiSession(authHash: string, description: string): Promise<boolean> {
+  // returns false if the session may still be alive, so the cached value is kept and reused instead of logging in again.
+  // Rate limits (429) and other rejections must not count as signed out, otherwise every run leaks another session.
+  private async deleteApiSession(authHash: string): Promise<boolean> {
     try {
-      const response = await axios.delete<{errorCode?: number, errorMessage?: string}>(`${apiBaseUrl}/Session`, {
-        headers: {
-          ...this.apiHeaders(),
-          Authorization: `Bearer ${authHash}`,
-        },
-        params: this.platformParams(),
+      const response = await axios.delete<ApiResponse<unknown>>(`${apiBaseUrl}/Session`, {
+        headers: this.apiHeaders(authHash),
         validateStatus: apiValidateStatus,
       });
 
-      if (response.status >= 400 || response.data?.errorCode) {
-        console.log(`Windscribe ${description} sign out was rejected, treating it as already ended: ${formatWindscribeBody(response.data)}`);
-      } else {
-        console.log(`Signed out of Windscribe ${description}`);
+      if (response.status >= 200 && response.status < 300 && !response.data?.errorCode) {
+        console.log('Signed out of Windscribe session');
+        return true;
       }
-      return true;
+
+      if (Number(response.data?.errorCode) == 701) {
+        console.log(`Windscribe session was already invalid: ${formatWindscribeBody(response.data)}`);
+        return true;
+      }
+
+      console.warn(`Windscribe session sign out was rejected, keeping cached auth hash to retry later: ${formatApiResponseError('Session sign out', response)}`);
+      return false;
     } catch (error) {
-      console.warn(`Failed to sign out of Windscribe ${description}: ${formatAxiosError(error)}`);
+      console.warn(`Failed to sign out of Windscribe session: ${formatAxiosError(error)}`);
       return false;
     }
   }
@@ -332,22 +284,23 @@ export class WindscribeClient {
       return this.configuredAuthHash;
     }
 
-    if (forceLogin) {
-      await this.cache.delete('authHash');
-      await this.cache.delete('sessionCookie');
-    } else {
-      const cachedAuthHash = await this.cache.get('authHash');
-      if (cachedAuthHash != undefined) {
-        return cachedAuthHash;
+    return lock.acquire('getAuthHash', async () => {
+      if (forceLogin) {
+        await this.cache.delete('authHash');
+      } else {
+        const cachedAuthHash = await this.cache.get('authHash');
+        if (cachedAuthHash != undefined) {
+          return cachedAuthHash;
+        }
       }
-    }
 
-    console.log('Invalid/missing Windscribe auth hash, logging into Windscribe API');
-    const authHash = await this.login();
-    await this.cache.set('authHash', authHash);
-    console.log('Successfully logged into Windscribe API and cached auth hash');
+      console.log('Invalid/missing Windscribe auth hash, logging into Windscribe API');
+      const authHash = await this.login();
+      await this.cache.set('authHash', authHash);
+      console.log('Successfully logged into Windscribe API and cached auth hash');
 
-    return authHash;
+      return authHash;
+    });
   }
 
   private async login(): Promise<string> {
@@ -371,13 +324,13 @@ export class WindscribeClient {
         throw new Error('Windscribe returned an ASCII CAPTCHA, which cannot be solved non-interactively');
       }
 
-      const secureTokenSig = computeTokenSignature(authToken.token);
       const loginData: Record<string, unknown> = {
         username: this.username,
         password: this.password,
-        session_type_id: '3',
+        session_type_id: 1,
+        platform: 'legacy-web',
         secure_token: authToken.token,
-        secure_token_sig: secureTokenSig,
+        secure_token_sig: authToken.token_sig ?? computeTokenSignature(authToken.token),
       };
 
       if (this.totp) {
@@ -385,24 +338,17 @@ export class WindscribeClient {
       }
 
       if (captchaSolution) {
-        loginData.captcha_solution = captchaSolution.offset.toString();
-        captchaSolution.trail.x.forEach((x, i) => {
-          loginData[`captcha_trail[x][${i}]`] = formatCaptchaCoordinate(x);
-        });
-        captchaSolution.trail.y.forEach((y, i) => {
-          loginData[`captcha_trail[y][${i}]`] = formatCaptchaCoordinate(y);
-        });
+        loginData.captcha_solution = Math.round(captchaSolution.offset);
+        loginData.captcha_trail = {
+          x: captchaSolution.trail.x.map(x => Math.round(x)),
+          y: captchaSolution.trail.y.map(y => Math.round(y)),
+        };
       }
 
-      const sessionResponse = await axios.post<SessionResponse>(
-        `${apiBaseUrl}/Session`,
-        qs.stringify(loginData, {arrayFormat: 'indices'}),
-        {
-          headers: this.apiHeaders(),
-          params: this.platformParams(),
-          validateStatus: apiValidateStatus,
-        },
-      );
+      const sessionResponse = await axios.post<SessionResponse>(`${apiBaseUrl}/Session`, loginData, {
+        headers: this.apiHeaders('anonymous', 'application/json'),
+        validateStatus: apiValidateStatus,
+      });
 
       if (sessionResponse.status >= 400) {
         throw new Error(formatApiResponseError('Session login', sessionResponse));
@@ -424,15 +370,13 @@ export class WindscribeClient {
   }
 
   private async fetchAuthToken(): Promise<NonNullable<AuthTokenResponse['data']>> {
-    const authResponse = await axios.post<AuthTokenResponse>(
-      `${apiBaseUrl}/AuthToken/login`,
-      qs.stringify({username: this.username}),
-      {
-        headers: this.apiHeaders(),
-        params: this.platformParams(),
-        validateStatus: apiValidateStatus,
-      },
-    );
+    const authResponse = await axios.post<AuthTokenResponse>(`${apiBaseUrl}/AuthToken/login`, {
+      username: this.username,
+      password: this.password,
+    }, {
+      headers: this.apiHeaders('anonymous', 'application/json'),
+      validateStatus: apiValidateStatus,
+    });
 
     if (authResponse.status >= 400) {
       throw new Error(formatApiResponseError('Auth token request', authResponse));
@@ -449,169 +393,87 @@ export class WindscribeClient {
     return authResponse.data.data;
   }
 
-  private async createWebSession(authHash: string): Promise<Cookie> {
-    const webSessionResponse = await axios.post<WebSessionResponse>(
-      `${apiBaseUrl}/WebSession`,
-      qs.stringify({
-        temp_session: '1',
-        session_type_id: '1',
-      }),
-      {
-        headers: {
-          ...this.apiHeaders(),
-          Authorization: `Bearer ${authHash}`,
-        },
-        params: this.platformParams(),
-        validateStatus: apiValidateStatus,
-      },
-    );
+  private apiHeaders(authHash: string, contentType?: string): Record<string, string> {
+    return {
+      'Authorization': `Bearer ${authHash}`,
+      'User-Agent': webUserAgent,
+      'Accept': '*/*',
+      'Origin': webBaseUrl,
+      'Referer': `${webBaseUrl}/`,
+      ...(contentType ? {'Content-Type': contentType} : {}),
+    };
+  }
 
-    if (webSessionResponse.status >= 400) {
-      if (!this.configuredAuthHash) {
-        await this.cache.delete('authHash');
-      }
-      throw new Error(formatApiResponseError('Web session request', webSessionResponse));
-    }
-
-    if (webSessionResponse.data.errorCode) {
-      if (!this.configuredAuthHash) {
-        await this.cache.delete('authHash');
-      }
-      throw new Error(`WebSession error: ${formatWindscribeBody(webSessionResponse.data)}`);
-    }
-
-    const tempSession = webSessionResponse.data.data?.temp_session;
-    if (!tempSession) {
-      throw new Error('No temp_session in Windscribe WebSession response');
-    }
-
-    const res = await axios.get<string>(`${webBaseUrl}/myaccount`, {
-      headers: {
-        'User-Agent': webUserAgent,
-      },
-      params: {
-        temp_session: tempSession,
-      },
-      maxRedirects: 0,
-      validateStatus: status => [200, 301, 302].includes(status),
+  // runs an EphPortForwarding request, logging in again once if the cached auth hash was rejected
+  private async ephPortForwardingRequest(
+    operation: string,
+    method: 'GET' | 'POST' | 'DELETE',
+    fields: Record<string, string | number | undefined> = {},
+  ): Promise<NonNullable<EphPortForwardingResponse['data']>> {
+    const send = async (authHash: string) => axios.request<EphPortForwardingResponse>({
+      url: `${apiBaseUrl}/EphPortForwarding`,
+      method,
+      headers: this.apiHeaders(authHash, method == 'GET' ? undefined : 'application/x-www-form-urlencoded'),
+      data: method == 'GET' ? undefined : qs.stringify({session_auth_hash: authHash, ...fields}),
+      validateStatus: apiValidateStatus,
     });
 
-    const setCookieHeaders = res.headers['set-cookie'];
-    if (!setCookieHeaders) {
-      throw new Error('No Set-Cookie header in temp_session response');
-    }
-
-    const wsSessionCookie = parseCookie(setCookieHeaders, {map: true, decodeValues: true})['ws_session_auth_hash'];
-    if (!wsSessionCookie) {
-      throw new Error('Failed to find ws_session_auth_hash in temp_session response');
-    }
-
-    return wsSessionCookie;
-  }
-
-  private apiHeaders(): Record<string, string> {
-    return {
-      'Content-Type': 'text/html; charset=utf-8',
-      'User-Agent': userAgent,
-      'Accept': 'application/json, text/plain, */*',
-      'Authorization': 'Bearer 0',
-    };
-  }
-
-  private platformParams(): Record<string, string> {
-    return {
-      platform,
-      app_version: appVersion,
-    };
-  }
-
-  private async clearCachedWindscribeSession(): Promise<void> {
-    await this.cache.delete('sessionCookie');
-  }
-
-  private async getMyAccountCsrfToken(forceLogin: boolean = false): Promise<CsrfInfo> {
-    try {
-      const sessionCookie = await this.getSession(forceLogin);
-
-      // get page
-      const res = await axios.get<string>('https://windscribe.com/myaccount', {
-        headers: {
-          'Cookie': `ws_session_auth_hash=${sessionCookie};`,
-          'User-Agent': webUserAgent,
-        },
-        maxRedirects: 0,
-        validateStatus: status => [302, 200].includes(status),
-      });
-
-      if (res.status == 302) {
-        await this.clearCachedWindscribeSession();
-        return await this.getMyAccountCsrfToken(true);
+    let response = await send(await this.getAuthHash());
+    if (isAuthError(response)) {
+      if (this.configuredAuthHash) {
+        throw new Error(`${operation}: configured WINDSCRIBE_AUTH_HASH was rejected: ${formatWindscribeBody(response.data)}`);
       }
-
-      // extract csrf tokena and time from page content
-      const csrfTime = /csrf_time = (\d+);/.exec(res.data)[1];
-      const csrfToken = /csrf_token = '(\w+)';/.exec(res.data)[1];
-
-      return {
-        csrfTime: +csrfTime,
-        csrfToken: csrfToken,
-      };
-    } catch (error) {
-      throw new Error(`Failed to get csrf token from my account page: ${formatAxiosError(error)}`);
+      console.warn(`Cached Windscribe auth hash was rejected, logging in again: ${formatWindscribeBody(response.data)}`);
+      response = await send(await this.getAuthHash(true));
     }
+
+    if (response.status >= 400) {
+      throw new Error(formatApiResponseError(operation, response));
+    }
+
+    if (response.data?.errorCode) {
+      throw new Error(`${operation} error: ${formatWindscribeBody(response.data)}`);
+    }
+
+    if (!response.data?.data) {
+      throw new Error(`${operation}: no data in response: ${formatWindscribeBody(response.data)}`);
+    }
+
+    return response.data.data;
+  }
+
+  private parseEphemeralPort(epf: EphemeralPort | false | undefined): PortForwardingInfo {
+    if (!epf) {
+      return {id: null, epfExpires: 0, ports: []};
+    }
+
+    return {
+      id: epf.id != null ? +epf.id : null,
+      epfExpires: +epf.start_ts,
+      ports: [+epf.ext, +epf.int],
+    };
   }
 
   private async getPortForwardingInfo(): Promise<PortForwardingInfo> {
     try {
-      const sessionCookie = await this.getSession();
-
-      // load sub page
-      const res = await axios.get<string>('https://windscribe.com/staticips/load', {
-        headers: {
-          'Cookie': `ws_session_auth_hash=${sessionCookie};`,
-          'User-Agent': webUserAgent,
-        }
-      });
-
-      // extract data from page
-      const epfExpires = res.data.match(/epfExpires = (\d+);/)[1]; // this is always present. set to 0 if no port is active
-      // Extract ports from the new UI structure: <span class="pf-ext">10583</span> and <span class="pf-int">10011</span>
-      const extPort = res.data.match(/<span class="pf-ext">(\d+)<\/span>/)?.[1];
-      const intPort = res.data.match(/<span class="pf-int">(\d+)<\/span>/)?.[1];
-      const ports = [extPort, intPort].filter((p): p is string => p !== undefined).map(p => +p);
-
-      return {
-        epfExpires: +epfExpires,
-        ports,
-      };
+      const data = await this.ephPortForwardingRequest('Get ephemeral port', 'GET');
+      return this.parseEphemeralPort(data.epf);
     } catch (error) {
       throw new Error(`Failed to get port forwarding info: ${formatAxiosError(error)}`);
     }
   }
 
-  private async removeEphemeralPort(csrfInfo: CsrfInfo): Promise<void> {
+  private async removeEphemeralPort(portForwardingInfo: PortForwardingInfo): Promise<void> {
     try {
-      const sessionCookie = await this.getSession();
+      // the web app falls back to the external port when the API does not return an id
+      const id = portForwardingInfo.id ?? portForwardingInfo.ports[0];
+      const data = await this.ephPortForwardingRequest('Delete ephemeral port', 'DELETE', {id});
 
-      // remove port
-      const res = await axios.post<{success: number, epf: boolean, message?: string}>('https://windscribe.com/staticips/deleteEphPort', qs.stringify({
-        ctime: csrfInfo.csrfTime,
-        ctoken: csrfInfo.csrfToken
-      }), {
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          'Cookie': `ws_session_auth_hash=${sessionCookie};`,
-          'User-Agent': webUserAgent,
-        }
-      });
-
-      // check for errors
-      if (res.data.success == 0) {
-        throw new Error(`success = 0; ${res.data.message ?? 'No message'}`);
+      if (data.success == 0) {
+        throw new Error('success = 0');
       }
 
-      // make sure we actually removed it
-      if (res.data.epf == false) {
+      if (data.epf === false) {
         console.warn('Tried to remove a non-existent ephemeral port, ignoring');
       } else {
         console.log('Deleted ephemeral port');
@@ -629,40 +491,25 @@ export class WindscribeClient {
     return this.ephemeralInternalPort ? portForwardingInfo.ports[0] : this.getTorrentPort(portForwardingInfo);
   }
 
-  private async requestEphemeralPort(csrfInfo: CsrfInfo): Promise<PortForwardingInfo> {
+  private async requestEphemeralPort(): Promise<PortForwardingInfo> {
     try {
-      const sessionCookie = await this.getSession();
-      const port = this.ephemeralInternalPort?.toString() ?? '';
-
-      // request new port
-      const res = await axios.post<{success: number, message?: string, epf?: {ext: number, int: number, start_ts: number}}>('https://windscribe.com/staticips/postEphPort', qs.stringify({
-        ctime: csrfInfo.csrfTime,
-        ctoken: csrfInfo.csrfToken,
-        port, // empty string requests a matching port
-      }), {
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          'Cookie': `ws_session_auth_hash=${sessionCookie};`,
-          'User-Agent': webUserAgent,
-        }
+      // omitting the port requests a matching port
+      const data = await this.ephPortForwardingRequest('Request ephemeral port', 'POST', {
+        port: this.ephemeralInternalPort ?? undefined,
       });
 
-      // check for errors
-      if (res.data.success == 0) {
-        throw new Error(`success = 0; ${res.data.message ?? 'No message'}`);
+      if (data.success == 0 || !data.epf) {
+        throw new Error(`no port returned: ${formatWindscribeBody(data)}`);
       }
 
-      // epf should be present by this point
-      const epf = res.data.epf!;
+      const portForwardingInfo = this.parseEphemeralPort(data.epf);
+      const [ext, int] = portForwardingInfo.ports;
       if (this.ephemeralInternalPort) {
-        console.log(`Created new specific ephemeral port: internal ${epf.int}, external ${epf.ext}`);
+        console.log(`Created new specific ephemeral port: internal ${int}, external ${ext}`);
       } else {
-        console.log(`Created new matching ephemeral port: ${epf.ext}`);
+        console.log(`Created new matching ephemeral port: ${ext}`);
       }
-      return {
-        epfExpires: epf.start_ts,
-        ports: [epf.ext, epf.int],
-      };
+      return portForwardingInfo;
     } catch (error) {
       const portRequestDescription = this.ephemeralInternalPort ? 'specific ephemeral port' : 'matching ephemeral port';
       throw new Error(`Failed to request ${portRequestDescription}: ${error instanceof Error ? error.message : error}`);

@@ -30,7 +30,6 @@ try {
     : new Date((status.epfExpires + 86400 * 7) * 1000);
 
   console.log('Windscribe debug check succeeded');
-  console.log(`CSRF token found: ${status.csrfTokenFound}`);
   console.log(`Current ephemeral ports: ${status.ports.length > 0 ? status.ports.join(' -> ') : 'none'}`);
   console.log(`Current ephemeral port expires: ${expires ? expires.toISOString() : 'none'}`);
 } catch (error) {
