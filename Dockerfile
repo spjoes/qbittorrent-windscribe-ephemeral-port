@@ -1,4 +1,4 @@
-FROM node:22-slim AS build
+FROM --platform=$BUILDPLATFORM node:22-slim AS build
 
 WORKDIR /builder
 
@@ -22,7 +22,7 @@ WORKDIR /app
 
 COPY package.json yarn.lock ./
 
-RUN yarn install --pure-lockfile
+RUN yarn install --pure-lockfile --production && yarn cache clean
 
 COPY --from=build /builder/dist ./dist
 
